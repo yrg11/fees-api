@@ -32,6 +32,7 @@ type AddLineItemSignal struct {
 	Description string   `json:"description"`
 	AmountMinor int64    `json:"amount_minor"`
 	Currency    Currency `json:"currency"`
+	Date        string   `json:"date"` // YYYY-MM-DD for FX rate lookup
 }
 
 // CloseBillSignal is the payload sent via the CloseBill signal.
@@ -137,12 +138,13 @@ func FeePeriodWorkflow(ctx workflow.Context, input FeePeriodWorkflowInput) (FeeP
 					Description: signal.Description,
 					AmountMinor: signal.AmountMinor,
 					Currency:    signal.Currency,
+					Date:        signal.Date,
 				},
 			}).Get(ctx, &output)
 
 			if err == nil {
 				state.LineItems = append(state.LineItems, output.LineItem)
-				state.TotalAmountMinor += signal.AmountMinor
+				state.TotalAmountMinor += output.LineItem.BillAmountMinor
 			}
 		})
 

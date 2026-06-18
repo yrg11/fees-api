@@ -80,15 +80,18 @@ func (s *WorkflowTestSuite) Test_AddLineItemSignal_PersistsItem() {
 			Description: "API usage",
 			AmountMinor: 4999,
 			Currency:    CurrencyUSD,
+			Date:        "2026-06-15",
 		},
 	}).Return(AddLineItemActivityOutput{
 		LineItem: LineItem{
-			ID:          1,
-			BillID:      1,
-			Description: "API usage",
-			AmountMinor: 4999,
-			Currency:    CurrencyUSD,
-			CreatedAt:   now,
+			ID:              1,
+			BillID:          1,
+			Description:     "API usage",
+			BaseCurrency:    CurrencyUSD,
+			BaseAmountMinor: 4999,
+			BillCurrency:    CurrencyUSD,
+			BillAmountMinor: 4999,
+			CreatedAt:       now,
 		},
 	}, nil)
 
@@ -104,6 +107,7 @@ func (s *WorkflowTestSuite) Test_AddLineItemSignal_PersistsItem() {
 			Description: "API usage",
 			AmountMinor: 4999,
 			Currency:    CurrencyUSD,
+			Date:        "2026-06-15",
 		})
 	}, 1*time.Second)
 
@@ -172,9 +176,15 @@ func (s *WorkflowTestSuite) Test_MultipleLineItems_AccumulatesTotal() {
 			Description: "Item 1",
 			AmountMinor: 1000,
 			Currency:    CurrencyUSD,
+			Date:        "2026-06-10",
 		},
 	}).Return(AddLineItemActivityOutput{
-		LineItem: LineItem{ID: 1, BillID: 1, Description: "Item 1", AmountMinor: 1000, Currency: CurrencyUSD, CreatedAt: now},
+		LineItem: LineItem{
+			ID: 1, BillID: 1, Description: "Item 1",
+			BaseCurrency: CurrencyUSD, BaseAmountMinor: 1000,
+			BillCurrency: CurrencyUSD, BillAmountMinor: 1000,
+			CreatedAt: now,
+		},
 	}, nil)
 
 	// Mock activity for second line item.
@@ -184,9 +194,15 @@ func (s *WorkflowTestSuite) Test_MultipleLineItems_AccumulatesTotal() {
 			Description: "Item 2",
 			AmountMinor: 2500,
 			Currency:    CurrencyUSD,
+			Date:        "2026-06-11",
 		},
 	}).Return(AddLineItemActivityOutput{
-		LineItem: LineItem{ID: 2, BillID: 1, Description: "Item 2", AmountMinor: 2500, Currency: CurrencyUSD, CreatedAt: now},
+		LineItem: LineItem{
+			ID: 2, BillID: 1, Description: "Item 2",
+			BaseCurrency: CurrencyUSD, BaseAmountMinor: 2500,
+			BillCurrency: CurrencyUSD, BillAmountMinor: 2500,
+			CreatedAt: now,
+		},
 	}, nil)
 
 	// Mock close activity.
@@ -201,6 +217,7 @@ func (s *WorkflowTestSuite) Test_MultipleLineItems_AccumulatesTotal() {
 			Description: "Item 1",
 			AmountMinor: 1000,
 			Currency:    CurrencyUSD,
+			Date:        "2026-06-10",
 		})
 	}, 1*time.Second)
 
@@ -209,6 +226,7 @@ func (s *WorkflowTestSuite) Test_MultipleLineItems_AccumulatesTotal() {
 			Description: "Item 2",
 			AmountMinor: 2500,
 			Currency:    CurrencyUSD,
+			Date:        "2026-06-11",
 		})
 	}, 2*time.Second)
 
@@ -239,7 +257,12 @@ func (s *WorkflowTestSuite) Test_QueryBillState_ReturnsCurrentState() {
 
 	// Mock add line item activity.
 	s.env.OnActivity(AddLineItemActivity, mock.Anything, mock.Anything).Return(AddLineItemActivityOutput{
-		LineItem: LineItem{ID: 1, BillID: 1, Description: "Test", AmountMinor: 500, Currency: CurrencyUSD, CreatedAt: now},
+		LineItem: LineItem{
+			ID: 1, BillID: 1, Description: "Test",
+			BaseCurrency: CurrencyUSD, BaseAmountMinor: 500,
+			BillCurrency: CurrencyUSD, BillAmountMinor: 500,
+			CreatedAt: now,
+		},
 	}, nil)
 
 	// Mock close activity.
@@ -254,6 +277,7 @@ func (s *WorkflowTestSuite) Test_QueryBillState_ReturnsCurrentState() {
 			Description: "Test",
 			AmountMinor: 500,
 			Currency:    CurrencyUSD,
+			Date:        "2026-06-15",
 		})
 	}, 1*time.Second)
 

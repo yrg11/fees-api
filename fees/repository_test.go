@@ -74,7 +74,7 @@ func TestCreateBill_InvalidPeriod(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidPeriod)
 }
 
-func TestAddLineItem_Success(t *testing.T) {
+func TestAddLineItem_SameCurrency_Success(t *testing.T) {
 	ctx := context.Background()
 
 	bill, err := createBill(ctx, CreateBillRequest{
@@ -89,15 +89,108 @@ func TestAddLineItem_Success(t *testing.T) {
 		Description: "API calls - June",
 		AmountMinor: 2999,
 		Currency:    CurrencyUSD,
+		Date:        "2026-06-15",
 	})
 	require.NoError(t, err)
 
 	assert.NotZero(t, item.ID)
 	assert.Equal(t, bill.ID, item.BillID)
 	assert.Equal(t, "API calls - June", item.Description)
-	assert.Equal(t, int64(2999), item.AmountMinor)
-	assert.Equal(t, CurrencyUSD, item.Currency)
+	assert.Equal(t, int64(2999), item.BaseAmountMinor)
+	assert.Equal(t, CurrencyUSD, item.BaseCurrency)
+	assert.Equal(t, int64(2999), item.BillAmountMinor)
+	assert.Equal(t, CurrencyUSD, item.BillCurrency)
+	assert.Nil(t, item.FXRate)
+	assert.Nil(t, item.FXRateDate)
 	assert.NotZero(t, item.CreatedAt)
+}
+
+func TestAddLineItem_CrossCurrency_Success(t *testing.T) {
+	ctx := context.Background()
+
+	// First, store an FX rate for the date
+	rateDate := time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC)
+	_, err := storeFXRate(ctx, CurrencyUSD, CurrencyGEL, 2.7, rateDate, "test")
+	require.NoError(t, err)
+
+	bill, err := createBill(ctx, CreateBillRequest{
+		CustomerID:  "cust_cross_1",
+		Currency:    CurrencyUSD,
+		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		PeriodEnd:   time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC),
+	})
+	require.NoError(t, err)
+
+	// Add a GEL line item to a USD bill
+	item, err := addLineItem(ctx, bill.ID, AddLineItemRequest{
+		Description: "GEL expense",
+		AmountMinor: 2700, // 27.00 GEL
+		Currency:    CurrencyGEL,
+		Date:        "2026-06-15",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, CurrencyGEL, item.BaseCurrency)
+	assert.Equal(t, int64(2700), item.BaseAmountMinor)
+	assert.Equal(t, CurrencyUSD, item.BillCurrency)
+	assert.Equal(t, int64(1000), item.BillAmountMinor) // 2700 / 2.7 = 1000
+	assert.NotNil(t, item.FXRate)
+	assert.InDelta(t, 2.7, *item.FXRate, 0.0001)
+	assert.NotNil(t, item.FXRateDate)
+}
+
+func TestAddLineItem_CrossCurrency_FallbackToPreviousDay(t *testing.T) {
+	ctx := context.Background()
+
+	// Store rate for June 14 only
+	rateDate := time.Date(2026, 6, 14, 0, 0, 0, 0, time.UTC)
+	_, err := storeFXRate(ctx, CurrencyUSD, CurrencyGEL, 2.8, rateDate, "test")
+	require.NoError(t, err)
+
+	bill, err := createBill(ctx, CreateBillRequest{
+		CustomerID:  "cust_cross_fb_1",
+		Currency:    CurrencyGEL,
+		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		PeriodEnd:   time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC),
+	})
+	require.NoError(t, err)
+
+	// Add a USD line item for June 15 — should fall back to June 14 rate
+	item, err := addLineItem(ctx, bill.ID, AddLineItemRequest{
+		Description: "USD expense",
+		AmountMinor: 1000, // $10.00
+		Currency:    CurrencyUSD,
+		Date:        "2026-06-15",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, CurrencyUSD, item.BaseCurrency)
+	assert.Equal(t, int64(1000), item.BaseAmountMinor)
+	assert.Equal(t, CurrencyGEL, item.BillCurrency)
+	assert.Equal(t, int64(2800), item.BillAmountMinor) // 1000 * 2.8 = 2800
+	assert.NotNil(t, item.FXRate)
+	assert.InDelta(t, 2.8, *item.FXRate, 0.0001)
+}
+
+func TestAddLineItem_CrossCurrency_NoRate_Error(t *testing.T) {
+	ctx := context.Background()
+
+	bill, err := createBill(ctx, CreateBillRequest{
+		CustomerID:  "cust_cross_noratex",
+		Currency:    CurrencyUSD,
+		PeriodStart: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		PeriodEnd:   time.Date(2026, 1, 31, 23, 59, 59, 0, time.UTC),
+	})
+	require.NoError(t, err)
+
+	// No FX rate stored for Jan 2026
+	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{
+		Description: "No rate available",
+		AmountMinor: 1000,
+		Currency:    CurrencyGEL,
+		Date:        "2026-01-10",
+	})
+	assert.ErrorIs(t, err, ErrFXRateNotFound)
 }
 
 func TestAddLineItem_BillNotFound(t *testing.T) {
@@ -107,6 +200,7 @@ func TestAddLineItem_BillNotFound(t *testing.T) {
 		Description: "Test",
 		AmountMinor: 100,
 		Currency:    CurrencyUSD,
+		Date:        "2026-06-15",
 	})
 	assert.ErrorIs(t, err, ErrBillNotFound)
 }
@@ -131,27 +225,9 @@ func TestAddLineItem_BillAlreadyClosed(t *testing.T) {
 		Description: "Should fail",
 		AmountMinor: 100,
 		Currency:    CurrencyUSD,
+		Date:        "2026-06-15",
 	})
 	assert.ErrorIs(t, err, ErrBillAlreadyClosed)
-}
-
-func TestAddLineItem_CurrencyMismatch(t *testing.T) {
-	ctx := context.Background()
-
-	bill, err := createBill(ctx, CreateBillRequest{
-		CustomerID:  "cust_curr_1",
-		Currency:    CurrencyUSD,
-		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
-		PeriodEnd:   time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC),
-	})
-	require.NoError(t, err)
-
-	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{
-		Description: "Wrong currency",
-		AmountMinor: 100,
-		Currency:    CurrencyGEL, // bill is USD
-	})
-	assert.ErrorIs(t, err, ErrCurrencyMismatch)
 }
 
 func TestAddLineItem_InvalidAmount(t *testing.T) {
@@ -169,6 +245,7 @@ func TestAddLineItem_InvalidAmount(t *testing.T) {
 		Description: "Zero amount",
 		AmountMinor: 0,
 		Currency:    CurrencyUSD,
+		Date:        "2026-06-15",
 	})
 	assert.ErrorIs(t, err, ErrInvalidAmount)
 
@@ -176,8 +253,37 @@ func TestAddLineItem_InvalidAmount(t *testing.T) {
 		Description: "Negative amount",
 		AmountMinor: -100,
 		Currency:    CurrencyUSD,
+		Date:        "2026-06-15",
 	})
 	assert.ErrorIs(t, err, ErrInvalidAmount)
+}
+
+func TestAddLineItem_InvalidDate(t *testing.T) {
+	ctx := context.Background()
+
+	bill, err := createBill(ctx, CreateBillRequest{
+		CustomerID:  "cust_date_1",
+		Currency:    CurrencyUSD,
+		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		PeriodEnd:   time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC),
+	})
+	require.NoError(t, err)
+
+	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{
+		Description: "No date",
+		AmountMinor: 100,
+		Currency:    CurrencyUSD,
+		Date:        "",
+	})
+	assert.ErrorIs(t, err, ErrInvalidDate)
+
+	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{
+		Description: "Bad date",
+		AmountMinor: 100,
+		Currency:    CurrencyUSD,
+		Date:        "not-a-date",
+	})
+	assert.ErrorIs(t, err, ErrInvalidDate)
 }
 
 func TestCloseBill_Success(t *testing.T) {
@@ -191,11 +297,12 @@ func TestCloseBill_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Add some line items.
+	// Add some line items (same currency).
 	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{
 		Description: "Item 1",
 		AmountMinor: 1000,
 		Currency:    CurrencyGEL,
+		Date:        "2026-06-10",
 	})
 	require.NoError(t, err)
 
@@ -203,6 +310,7 @@ func TestCloseBill_Success(t *testing.T) {
 		Description: "Item 2",
 		AmountMinor: 2500,
 		Currency:    CurrencyGEL,
+		Date:        "2026-06-11",
 	})
 	require.NoError(t, err)
 
@@ -344,11 +452,11 @@ func TestListLineItems_ReturnsItemsInOrder(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{Description: "First", AmountMinor: 100, Currency: CurrencyUSD})
+	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{Description: "First", AmountMinor: 100, Currency: CurrencyUSD, Date: "2026-06-10"})
 	require.NoError(t, err)
-	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{Description: "Second", AmountMinor: 200, Currency: CurrencyUSD})
+	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{Description: "Second", AmountMinor: 200, Currency: CurrencyUSD, Date: "2026-06-11"})
 	require.NoError(t, err)
-	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{Description: "Third", AmountMinor: 300, Currency: CurrencyUSD})
+	_, err = addLineItem(ctx, bill.ID, AddLineItemRequest{Description: "Third", AmountMinor: 300, Currency: CurrencyUSD, Date: "2026-06-12"})
 	require.NoError(t, err)
 
 	items, err := listLineItems(ctx, bill.ID)
@@ -384,4 +492,70 @@ func TestSetBillWorkflowID_NotFound(t *testing.T) {
 
 	err := setBillWorkflowID(ctx, 999999, "wf-id")
 	assert.ErrorIs(t, err, ErrBillNotFound)
+}
+
+func TestStoreFXRate_Success(t *testing.T) {
+	ctx := context.Background()
+
+	rateDate := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	rate, err := storeFXRate(ctx, CurrencyUSD, CurrencyGEL, 2.75, rateDate, "yfinance")
+	require.NoError(t, err)
+
+	assert.NotZero(t, rate.ID)
+	assert.Equal(t, CurrencyUSD, rate.BaseCurrency)
+	assert.Equal(t, CurrencyGEL, rate.QuoteCurrency)
+	assert.InDelta(t, 2.75, rate.Rate, 0.0001)
+	assert.Equal(t, "yfinance", rate.Source)
+}
+
+func TestGetFXRate_ExactDate(t *testing.T) {
+	ctx := context.Background()
+
+	rateDate := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
+	_, err := storeFXRate(ctx, CurrencyUSD, CurrencyGEL, 2.65, rateDate, "test")
+	require.NoError(t, err)
+
+	rate, err := getFXRate(ctx, CurrencyUSD, CurrencyGEL, rateDate)
+	require.NoError(t, err)
+	assert.InDelta(t, 2.65, rate.Rate, 0.0001)
+}
+
+func TestGetFXRate_FallbackPreviousDay(t *testing.T) {
+	ctx := context.Background()
+
+	// Store rate for July 3 only
+	rateDate := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
+	_, err := storeFXRate(ctx, CurrencyUSD, CurrencyGEL, 2.6, rateDate, "test")
+	require.NoError(t, err)
+
+	// Query for July 4 — should fall back to July 3
+	queryDate := time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)
+	rate, err := getFXRate(ctx, CurrencyUSD, CurrencyGEL, queryDate)
+	require.NoError(t, err)
+	assert.InDelta(t, 2.6, rate.Rate, 0.0001)
+}
+
+func TestGetFXRate_TooOld_Error(t *testing.T) {
+	ctx := context.Background()
+
+	// Store rate for July 1
+	rateDate := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	_, err := storeFXRate(ctx, CurrencyUSD, CurrencyGEL, 2.5, rateDate, "test")
+	require.NoError(t, err)
+
+	// Query for July 5 — July 1 is more than 1 day before, should error
+	queryDate := time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC)
+	_, err = getFXRate(ctx, CurrencyUSD, CurrencyGEL, queryDate)
+	assert.ErrorIs(t, err, ErrFXRateNotFound)
+}
+
+func TestConvertAmount(t *testing.T) {
+	// Same currency
+	assert.Equal(t, int64(1000), convertAmount(1000, CurrencyUSD, CurrencyUSD, 2.7))
+
+	// USD to GEL: 1000 * 2.7 = 2700
+	assert.Equal(t, int64(2700), convertAmount(1000, CurrencyUSD, CurrencyGEL, 2.7))
+
+	// GEL to USD: 2700 / 2.7 = 1000
+	assert.Equal(t, int64(1000), convertAmount(2700, CurrencyGEL, CurrencyUSD, 2.7))
 }

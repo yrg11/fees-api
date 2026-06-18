@@ -30,12 +30,26 @@ type Bill struct {
 }
 
 type LineItem struct {
-	ID          int64     `json:"id"`
-	BillID      int64     `json:"bill_id"`
-	Description string    `json:"description"`
-	AmountMinor int64     `json:"amount_minor"`
-	Currency    Currency  `json:"currency"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID              int64      `json:"id"`
+	BillID          int64      `json:"bill_id"`
+	Description     string     `json:"description"`
+	BaseCurrency    Currency   `json:"base_currency"`
+	BaseAmountMinor int64      `json:"base_amount_minor"`
+	BillCurrency    Currency   `json:"bill_currency"`
+	BillAmountMinor int64      `json:"bill_amount_minor"`
+	FXRate          *float64   `json:"fx_rate,omitempty"`
+	FXRateDate      *time.Time `json:"fx_rate_date,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+type FXRate struct {
+	ID            int64     `json:"id"`
+	BaseCurrency  Currency  `json:"base_currency"`
+	QuoteCurrency Currency  `json:"quote_currency"`
+	Rate          float64   `json:"rate"`
+	RateDate      time.Time `json:"rate_date"`
+	Source        string    `json:"source"`
+	FetchedAt     time.Time `json:"fetched_at"`
 }
 
 type CreateBillRequest struct {
@@ -53,6 +67,7 @@ type AddLineItemRequest struct {
 	Description string   `json:"description"`
 	AmountMinor int64    `json:"amount_minor"`
 	Currency    Currency `json:"currency"`
+	Date        string   `json:"date"` // YYYY-MM-DD, used for FX rate lookup
 }
 
 type AddLineItemResponse struct {
@@ -73,4 +88,3 @@ type GetBillResponse struct {
 type ListBillsResponse struct {
 	Bills []Bill `json:"bills"`
 }
-

@@ -3,6 +3,7 @@ package fees
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"encore.dev/beta/errs"
 )
@@ -44,6 +45,12 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 	if err := validateCurrency(req.Currency); err != nil {
 		return nil, mapError(err)
 	}
+	if req.Date == "" {
+		return nil, mapError(ErrInvalidDate)
+	}
+	if _, err := time.Parse("2006-01-02", req.Date); err != nil {
+		return nil, mapError(ErrInvalidDate)
+	}
 
 	// Check bill exists and is open (fast-fail before sending signal).
 	bill, err := getBill(ctx, billID)
@@ -53,15 +60,13 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 	if bill.Status == BillStatusClosed {
 		return nil, mapError(ErrBillAlreadyClosed)
 	}
-	if bill.Currency != req.Currency {
-		return nil, mapError(ErrCurrencyMismatch)
-	}
 
 	// Send signal to the workflow — the workflow will persist via activity.
 	err = signalAddLineItem(ctx, billID, AddLineItemSignal{
 		Description: req.Description,
 		AmountMinor: req.AmountMinor,
 		Currency:    req.Currency,
+		Date:        req.Date,
 	})
 	if err != nil {
 		return nil, mapError(err)
@@ -170,6 +175,10 @@ func mapError(err error) error {
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
 	case isErr(err, ErrInvalidPeriod):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
+	case isErr(err, ErrInvalidDate):
+		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
+	case isErr(err, ErrFXRateNotFound):
+		return &errs.Error{Code: errs.FailedPrecondition, Message: err.Error()}
 	default:
 		return &errs.Error{Code: errs.Internal, Message: err.Error()}
 	}
