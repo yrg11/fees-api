@@ -175,9 +175,30 @@ Closing an already-closed bill returns the existing closed state rather than err
 
 ## Running Tests
 
+All tests run via `encore test` (provides database provisioning and Encore runtime):
+
 ```bash
-encore test ./...
+# Run all tests (workflow + repository)
+encore test ./fees/ -v
+
+# Run only workflow unit tests (Temporal signal/timer/query logic)
+encore test ./fees/ -run TestWorkflow -v
+
+# Run only repository/integration tests (database operations)
+encore test ./fees/ -run "^Test[^W]" -v
+
+# Run a specific test
+encore test ./fees/ -run TestCloseBill_Idempotent -v
 ```
+
+**Note:** Tests must be run via `encore test`, not `go test`, because the Encore runtime manages database provisioning and migrations.
+
+### Test Coverage
+
+| File | Tests | What's covered |
+|------|-------|----------------|
+| `workflow_test.go` | 6 tests | Signal handling, auto-close timer, query handler, state accumulation |
+| `repository_test.go` | 19 tests | Bill CRUD, line items, validation, currency checks, idempotent close, edge cases |
 
 ## Project Structure
 
