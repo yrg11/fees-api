@@ -52,11 +52,12 @@ type FXRate struct {
 	FetchedAt     time.Time `json:"fetched_at"`
 }
 
-type CreateBillRequest struct {
-	CustomerID  string    `json:"customer_id"`
-	Currency    Currency  `json:"currency"`
-	PeriodStart time.Time `json:"period_start"`
-	PeriodEnd   time.Time `json:"period_end"`
+// createBillInput is the internal input for creating a bill (customer_id comes from auth).
+type createBillInput struct {
+	CustomerID  string
+	Currency    Currency
+	PeriodStart time.Time
+	PeriodEnd   time.Time
 }
 
 type CreateBillResponse struct {

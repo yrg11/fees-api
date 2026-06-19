@@ -8,9 +8,22 @@ import (
 	"encore.dev/beta/errs"
 )
 
-//encore:api public method=POST path=/bills
+type CreateBillRequest struct {
+	Currency    Currency  `json:"currency"`
+	PeriodStart time.Time `json:"period_start"`
+	PeriodEnd   time.Time `json:"period_end"`
+}
+
+//encore:api auth method=POST path=/bills
 func CreateBill(ctx context.Context, req *CreateBillRequest) (*CreateBillResponse, error) {
-	bill, err := createBill(ctx, *req)
+	customerID := getAuthCustomerID()
+
+	bill, err := createBill(ctx, createBillInput{
+		CustomerID:  customerID,
+		Currency:    req.Currency,
+		PeriodStart: req.PeriodStart,
+		PeriodEnd:   req.PeriodEnd,
+	})
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -33,7 +46,7 @@ func CreateBill(ctx context.Context, req *CreateBillRequest) (*CreateBillRespons
 
 // AddLineItem sends a signal to the bill's Temporal workflow to add a line item.
 //
-//encore:api public method=POST path=/bills/:billID/line-items
+//encore:api auth method=POST path=/bills/:billID/line-items
 func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*AddLineItemResponse, error) {
 	// Validate input before signalling.
 	if req.Description == "" {
@@ -52,8 +65,8 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 		return nil, mapError(ErrInvalidDate)
 	}
 
-	// Check bill exists and is open (fast-fail before sending signal).
-	bill, err := getBill(ctx, billID)
+	// Check bill exists, is open, and belongs to this customer.
+	bill, err := authorizeBillAccess(ctx, billID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -81,10 +94,10 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 
 // CloseBill sends a signal to the bill's Temporal workflow to close it.
 //
-//encore:api public method=POST path=/bills/:billID/close
+//encore:api auth method=POST path=/bills/:billID/close
 func CloseBill(ctx context.Context, billID int64) (*CloseBillResponse, error) {
-	// Check bill exists and is open.
-	bill, err := getBill(ctx, billID)
+	// Check bill exists, is open, and belongs to this customer.
+	bill, err := authorizeBillAccess(ctx, billID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -104,9 +117,9 @@ func CloseBill(ctx context.Context, billID int64) (*CloseBillResponse, error) {
 	}, nil
 }
 
-//encore:api public method=GET path=/bills/:billID
+//encore:api auth method=GET path=/bills/:billID
 func GetBill(ctx context.Context, billID int64) (*GetBillResponse, error) {
-	bill, err := getBill(ctx, billID)
+	bill, err := authorizeBillAccess(ctx, billID)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -124,8 +137,13 @@ func GetBill(ctx context.Context, billID int64) (*GetBillResponse, error) {
 
 // GetBillWorkflowState queries the Temporal workflow for real-time bill state.
 //
-//encore:api public method=GET path=/bills/:billID/workflow-state
+//encore:api auth method=GET path=/bills/:billID/workflow-state
 func GetBillWorkflowState(ctx context.Context, billID int64) (*BillWorkflowState, error) {
+	_, err := authorizeBillAccess(ctx, billID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
 	state, err := queryBillWorkflowState(ctx, billID)
 	if err != nil {
 		return nil, mapError(err)
@@ -137,8 +155,10 @@ type ListBillsParams struct {
 	Status string `query:"status"`
 }
 
-//encore:api public method=GET path=/bills
+//encore:api auth method=GET path=/bills
 func ListBills(ctx context.Context, params *ListBillsParams) (*ListBillsResponse, error) {
+	customerID := getAuthCustomerID()
+
 	var statusFilter *BillStatus
 
 	if params.Status != "" {
@@ -151,7 +171,7 @@ func ListBills(ctx context.Context, params *ListBillsParams) (*ListBillsResponse
 		}
 	}
 
-	bills, err := listBills(ctx, statusFilter)
+	bills, err := listBillsByCustomer(ctx, customerID, statusFilter)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -159,6 +179,18 @@ func ListBills(ctx context.Context, params *ListBillsParams) (*ListBillsResponse
 	return &ListBillsResponse{
 		Bills: bills,
 	}, nil
+}
+
+// authorizeBillAccess checks that the bill exists and belongs to the authenticated customer.
+func authorizeBillAccess(ctx context.Context, billID int64) (Bill, error) {
+	bill, err := getBill(ctx, billID)
+	if err != nil {
+		return Bill{}, err
+	}
+	if bill.CustomerID != getAuthCustomerID() {
+		return Bill{}, ErrBillNotFound // don't reveal existence to other customers
+	}
+	return bill, nil
 }
 
 func mapError(err error) error {

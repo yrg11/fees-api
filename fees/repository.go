@@ -123,7 +123,7 @@ func lookupFXRateForConversion(ctx context.Context, baseCurrency, billCurrency C
 	return fxRate.Rate, fxRate.RateDate, nil
 }
 
-func createBill(ctx context.Context, req CreateBillRequest) (Bill, error) {
+func createBill(ctx context.Context, req createBillInput) (Bill, error) {
 	if req.CustomerID == "" {
 		return Bill{}, fmt.Errorf("customer_id is required")
 	}
@@ -275,6 +275,68 @@ func listBills(ctx context.Context, status *BillStatus) ([]Bill, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf("list bills: %w", err)
+	}
+	defer rows.Close()
+
+	var bills []Bill
+
+	for rows.Next() {
+		var b Bill
+		if err := rows.Scan(
+			&b.ID,
+			&b.CustomerID,
+			&b.Currency,
+			&b.Status,
+			&b.PeriodStart,
+			&b.PeriodEnd,
+			&b.TotalAmountMinor,
+			&b.WorkflowID,
+			&b.CreatedAt,
+			&b.ClosedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan bill: %w", err)
+		}
+
+		bills = append(bills, b)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate bills: %w", err)
+	}
+
+	return bills, nil
+}
+
+func listBillsByCustomer(ctx context.Context, customerID string, status *BillStatus) ([]Bill, error) {
+	query := `
+		SELECT
+			id,
+			customer_id,
+			currency,
+			status,
+			period_start,
+			period_end,
+			total_amount_minor,
+			COALESCE(temporal_workflow_id, ''),
+			created_at,
+			closed_at
+		FROM bills
+		WHERE customer_id = $1
+	`
+
+	var rows *sqldb.Rows
+	var err error
+
+	if status != nil {
+		query += ` AND status = $2 ORDER BY id DESC`
+		rows, err = db.Query(ctx, query, customerID, *status)
+	} else {
+		query += ` ORDER BY id DESC`
+		rows, err = db.Query(ctx, query, customerID)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("list bills by customer: %w", err)
 	}
 	defer rows.Close()
 

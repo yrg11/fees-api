@@ -12,7 +12,7 @@ import (
 func TestCreateBill_Success(t *testing.T) {
 	ctx := context.Background()
 
-	req := CreateBillRequest{
+	req := createBillInput{
 		CustomerID:  "cust_test_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -35,7 +35,7 @@ func TestCreateBill_Success(t *testing.T) {
 func TestCreateBill_InvalidCurrency(t *testing.T) {
 	ctx := context.Background()
 
-	req := CreateBillRequest{
+	req := createBillInput{
 		CustomerID:  "cust_1",
 		Currency:    "EUR",
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -49,7 +49,7 @@ func TestCreateBill_InvalidCurrency(t *testing.T) {
 func TestCreateBill_EmptyCustomerID(t *testing.T) {
 	ctx := context.Background()
 
-	req := CreateBillRequest{
+	req := createBillInput{
 		CustomerID:  "",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -63,7 +63,7 @@ func TestCreateBill_EmptyCustomerID(t *testing.T) {
 func TestCreateBill_InvalidPeriod(t *testing.T) {
 	ctx := context.Background()
 
-	req := CreateBillRequest{
+	req := createBillInput{
 		CustomerID:  "cust_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC),
@@ -77,7 +77,7 @@ func TestCreateBill_InvalidPeriod(t *testing.T) {
 func TestAddLineItem_SameCurrency_Success(t *testing.T) {
 	ctx := context.Background()
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_li_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -113,7 +113,7 @@ func TestAddLineItem_CrossCurrency_Success(t *testing.T) {
 	_, err := storeFXRate(ctx, CurrencyUSD, CurrencyGEL, 2.7, rateDate, "test")
 	require.NoError(t, err)
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_cross_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -147,7 +147,7 @@ func TestAddLineItem_CrossCurrency_FallbackToPreviousDay(t *testing.T) {
 	_, err := storeFXRate(ctx, CurrencyUSD, CurrencyGEL, 2.8, rateDate, "test")
 	require.NoError(t, err)
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_cross_fb_1",
 		Currency:    CurrencyGEL,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -175,7 +175,7 @@ func TestAddLineItem_CrossCurrency_FallbackToPreviousDay(t *testing.T) {
 func TestAddLineItem_CrossCurrency_NoRate_Error(t *testing.T) {
 	ctx := context.Background()
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_cross_noratex",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -208,7 +208,7 @@ func TestAddLineItem_BillNotFound(t *testing.T) {
 func TestAddLineItem_BillAlreadyClosed(t *testing.T) {
 	ctx := context.Background()
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_closed_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -233,7 +233,7 @@ func TestAddLineItem_BillAlreadyClosed(t *testing.T) {
 func TestAddLineItem_InvalidAmount(t *testing.T) {
 	ctx := context.Background()
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_amt_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -261,7 +261,7 @@ func TestAddLineItem_InvalidAmount(t *testing.T) {
 func TestAddLineItem_InvalidDate(t *testing.T) {
 	ctx := context.Background()
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_date_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -289,7 +289,7 @@ func TestAddLineItem_InvalidDate(t *testing.T) {
 func TestCloseBill_Success(t *testing.T) {
 	ctx := context.Background()
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_close_1",
 		Currency:    CurrencyGEL,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -327,7 +327,7 @@ func TestCloseBill_Success(t *testing.T) {
 func TestCloseBill_Idempotent(t *testing.T) {
 	ctx := context.Background()
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_idem_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -354,7 +354,7 @@ func TestCloseBill_NotFound(t *testing.T) {
 func TestCloseBill_EmptyBill(t *testing.T) {
 	ctx := context.Background()
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_empty_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -373,7 +373,7 @@ func TestCloseBill_EmptyBill(t *testing.T) {
 func TestGetBill_Success(t *testing.T) {
 	ctx := context.Background()
 
-	created, err := createBill(ctx, CreateBillRequest{
+	created, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_get_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -400,7 +400,7 @@ func TestListBills_FilterByStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Create an open bill.
-	_, err := createBill(ctx, CreateBillRequest{
+	_, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_list_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -409,7 +409,7 @@ func TestListBills_FilterByStatus(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create and close another bill.
-	closedBill, err := createBill(ctx, CreateBillRequest{
+	closedBill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_list_2",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -444,7 +444,7 @@ func TestListBills_FilterByStatus(t *testing.T) {
 func TestListLineItems_ReturnsItemsInOrder(t *testing.T) {
 	ctx := context.Background()
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_items_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
@@ -471,7 +471,7 @@ func TestListLineItems_ReturnsItemsInOrder(t *testing.T) {
 func TestSetBillWorkflowID(t *testing.T) {
 	ctx := context.Background()
 
-	bill, err := createBill(ctx, CreateBillRequest{
+	bill, err := createBill(ctx, createBillInput{
 		CustomerID:  "cust_wf_1",
 		Currency:    CurrencyUSD,
 		PeriodStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
