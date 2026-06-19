@@ -117,3 +117,17 @@ func StoreFXRateActivity(ctx context.Context, input StoreFXRateActivityInput) er
 	_, err := storeFXRate(ctx, input.BaseCurrency, input.QuoteCurrency, input.Rate, input.RateDate, input.Source)
 	return err
 }
+
+// ListActiveCurrencyCodesActivity returns all active non-USD currency codes.
+func ListActiveCurrencyCodesActivity(ctx context.Context) ([]string, error) {
+	currencies, err := listActiveNonBaseCurrencies(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	codes := make([]string, len(currencies))
+	for i, c := range currencies {
+		codes[i] = c.Code
+	}
+	return codes, nil
+}

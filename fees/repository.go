@@ -22,29 +22,44 @@ var (
 	ErrInvalidDate       = errors.New("invalid date format, expected YYYY-MM-DD")
 )
 
+// validateCurrency checks the currency exists in the currencies table.
 func validateCurrency(c Currency) error {
-	switch c {
-	case CurrencyUSD, CurrencyGEL:
-		return nil
-	default:
+	// Basic format check
+	if c == "" || len(c) < 3 {
 		return ErrInvalidCurrency
 	}
+	return nil
 }
 
-// convertAmount converts baseAmount from baseCurrency to billCurrency using the given rate.
-// Rate is stored as 1 USD = rate GEL.
-// If baseCurrency == USD and billCurrency == GEL: billAmount = baseAmount * rate
-// If baseCurrency == GEL and billCurrency == USD: billAmount = baseAmount / rate
-func convertAmount(baseAmountMinor int64, baseCurrency, billCurrency Currency, rate float64) int64 {
+// validateCurrencyExists checks the currency is registered and active in DB.
+func validateCurrencyExists(ctx context.Context, c Currency) error {
+	return validateCurrencyFromDB(ctx, c)
+}
+
+// convertAmountViaUSD converts baseAmount from baseCurrency to billCurrency
+// using triangulation through USD.
+// All FX rates are stored as 1 USD = X (quote currency).
+//
+// Cases:
+//   - base == bill: no conversion
+//   - base == USD: billAmount = baseAmount * rateQuote (USD -> quote)
+//   - bill == USD: billAmount = baseAmount / rateBase (base -> USD)
+//   - else: baseAmount / rateBase * rateBill (base -> USD -> bill)
+func convertAmountViaUSD(baseAmountMinor int64, baseCurrency, billCurrency Currency, rateBase, rateBill float64) int64 {
 	if baseCurrency == billCurrency {
 		return baseAmountMinor
 	}
-	// Rate is always USD/GEL (1 USD = rate GEL)
-	if baseCurrency == CurrencyUSD && billCurrency == CurrencyGEL {
-		return int64(math.Round(float64(baseAmountMinor) * rate))
+	if baseCurrency == CurrencyUSD {
+		// USD -> bill: multiply by bill rate
+		return int64(math.Round(float64(baseAmountMinor) * rateBill))
 	}
-	// baseCurrency == GEL, billCurrency == USD
-	return int64(math.Round(float64(baseAmountMinor) / rate))
+	if billCurrency == CurrencyUSD {
+		// base -> USD: divide by base rate
+		return int64(math.Round(float64(baseAmountMinor) / rateBase))
+	}
+	// base -> USD -> bill
+	usdAmount := float64(baseAmountMinor) / rateBase
+	return int64(math.Round(usdAmount * rateBill))
 }
 
 // getFXRate retrieves the FX rate for the given date, falling back to the previous day.
@@ -112,22 +127,68 @@ func storeFXRate(ctx context.Context, baseCurrency, quoteCurrency Currency, rate
 	return r, nil
 }
 
-// lookupFXRateForConversion gets the rate needed to convert between two currencies.
-// Always looks up USD/GEL pair regardless of direction.
-func lookupFXRateForConversion(ctx context.Context, baseCurrency, billCurrency Currency, rateDate time.Time) (float64, time.Time, error) {
-	// Always store/lookup as USD/GEL
-	fxRate, err := getFXRate(ctx, CurrencyUSD, CurrencyGEL, rateDate)
-	if err != nil {
-		return 0, time.Time{}, err
+// fxConversionResult holds the rates used for a conversion.
+type fxConversionResult struct {
+	BillAmountMinor int64
+	Rate            float64   // effective rate used (for display/storage)
+	RateDate        time.Time // date of rate used
+}
+
+// lookupAndConvert performs currency conversion via USD triangulation.
+// Returns the converted amount and the effective rate information.
+func lookupAndConvert(ctx context.Context, baseAmountMinor int64, baseCurrency, billCurrency Currency, rateDate time.Time) (fxConversionResult, error) {
+	if baseCurrency == billCurrency {
+		return fxConversionResult{BillAmountMinor: baseAmountMinor}, nil
 	}
-	return fxRate.Rate, fxRate.RateDate, nil
+
+	var rateBase float64 = 1.0  // rate for baseCurrency vs USD
+	var rateBill float64 = 1.0  // rate for billCurrency vs USD
+	var effectiveRateDate time.Time
+
+	// Get base -> USD rate (if base is not USD)
+	if baseCurrency != CurrencyUSD {
+		fxRate, err := getFXRate(ctx, CurrencyUSD, baseCurrency, rateDate)
+		if err != nil {
+			return fxConversionResult{}, err
+		}
+		rateBase = fxRate.Rate
+		effectiveRateDate = fxRate.RateDate
+	}
+
+	// Get USD -> bill rate (if bill is not USD)
+	if billCurrency != CurrencyUSD {
+		fxRate, err := getFXRate(ctx, CurrencyUSD, billCurrency, rateDate)
+		if err != nil {
+			return fxConversionResult{}, err
+		}
+		rateBill = fxRate.Rate
+		effectiveRateDate = fxRate.RateDate
+	}
+
+	billAmount := convertAmountViaUSD(baseAmountMinor, baseCurrency, billCurrency, rateBase, rateBill)
+
+	// Compute an effective display rate (base -> bill)
+	var effectiveRate float64
+	if baseCurrency == CurrencyUSD {
+		effectiveRate = rateBill
+	} else if billCurrency == CurrencyUSD {
+		effectiveRate = 1.0 / rateBase
+	} else {
+		effectiveRate = rateBill / rateBase
+	}
+
+	return fxConversionResult{
+		BillAmountMinor: billAmount,
+		Rate:            effectiveRate,
+		RateDate:        effectiveRateDate,
+	}, nil
 }
 
 func createBill(ctx context.Context, req createBillInput) (Bill, error) {
 	if req.CustomerID == "" {
 		return Bill{}, fmt.Errorf("customer_id is required")
 	}
-	if err := validateCurrency(req.Currency); err != nil {
+	if err := validateCurrencyExists(ctx, req.Currency); err != nil {
 		return Bill{}, err
 	}
 	if !req.PeriodEnd.After(req.PeriodStart) {
@@ -421,7 +482,7 @@ func addLineItem(ctx context.Context, billID int64, req AddLineItemRequest) (Lin
 	if req.AmountMinor <= 0 {
 		return LineItem{}, ErrInvalidAmount
 	}
-	if err := validateCurrency(req.Currency); err != nil {
+	if err := validateCurrencyExists(ctx, req.Currency); err != nil {
 		return LineItem{}, err
 	}
 	if req.Date == "" {
@@ -470,14 +531,14 @@ func addLineItem(ctx context.Context, billID int64, req AddLineItemRequest) (Lin
 		// Same currency, no conversion needed
 		billAmountMinor = req.AmountMinor
 	} else {
-		// Cross-currency: look up FX rate
-		rate, rateDateVal, err := lookupFXRateForConversion(ctx, req.Currency, billCurrency, rateDate)
+		// Cross-currency: convert via USD triangulation
+		result, err := lookupAndConvert(ctx, req.AmountMinor, req.Currency, billCurrency, rateDate)
 		if err != nil {
 			return LineItem{}, err
 		}
-		billAmountMinor = convertAmount(req.AmountMinor, req.Currency, billCurrency, rate)
-		fxRate = &rate
-		fxRateDate = &rateDateVal
+		billAmountMinor = result.BillAmountMinor
+		fxRate = &result.Rate
+		fxRateDate = &result.RateDate
 	}
 
 	var item LineItem

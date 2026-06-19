@@ -35,16 +35,13 @@ func startFXCronWorkflow() error {
 		return err
 	}
 
-	workflowID := "fx-rate-cron-usd-gel"
+	workflowID := "fx-rate-cron-all-currencies"
 
 	_, err = c.ExecuteWorkflow(context.Background(), client.StartWorkflowOptions{
 		ID:           workflowID,
 		TaskQueue:    FXTaskQueue,
 		CronSchedule: "0 9 * * *", // Daily at 9am UTC
-	}, FXRateCronWorkflow, FXRateCronWorkflowInput{
-		BaseCurrency:  CurrencyUSD,
-		QuoteCurrency: CurrencyGEL,
-	})
+	}, FXRateCronWorkflow)
 
 	if err != nil {
 		// If workflow already running, that's fine (idempotent).
