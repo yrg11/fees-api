@@ -23,6 +23,7 @@ func StartTemporalWorker() error {
 	fxWorker.RegisterWorkflow(FXRateCronWorkflow)
 	fxWorker.RegisterActivity(FetchFXRateActivity)
 	fxWorker.RegisterActivity(StoreFXRateActivity)
+	fxWorker.RegisterActivity(ListActiveCurrencyCodesActivity)
 
 	log.Println("starting temporal workers")
 

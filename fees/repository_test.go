@@ -549,13 +549,16 @@ func TestGetFXRate_TooOld_Error(t *testing.T) {
 	assert.ErrorIs(t, err, ErrFXRateNotFound)
 }
 
-func TestConvertAmount(t *testing.T) {
-	// Same currency
-	assert.Equal(t, int64(1000), convertAmount(1000, CurrencyUSD, CurrencyUSD, 2.7))
+func TestConvertAmountViaUSD(t *testing.T) {
+	// Same currency — rateBase and rateBill don't matter
+	assert.Equal(t, int64(1000), convertAmountViaUSD(1000, CurrencyUSD, CurrencyUSD, 1.0, 1.0))
 
-	// USD to GEL: 1000 * 2.7 = 2700
-	assert.Equal(t, int64(2700), convertAmount(1000, CurrencyUSD, CurrencyGEL, 2.7))
+	// USD to GEL: 1000 * 2.7 = 2700 (rateBill=2.7)
+	assert.Equal(t, int64(2700), convertAmountViaUSD(1000, CurrencyUSD, CurrencyGEL, 1.0, 2.7))
 
-	// GEL to USD: 2700 / 2.7 = 1000
-	assert.Equal(t, int64(1000), convertAmount(2700, CurrencyGEL, CurrencyUSD, 2.7))
+	// GEL to USD: 2700 / 2.7 = 1000 (rateBase=2.7)
+	assert.Equal(t, int64(1000), convertAmountViaUSD(2700, CurrencyGEL, CurrencyUSD, 2.7, 1.0))
+
+	// GEL to EUR (triangulation): 2700 GEL / 2.7 (GEL rate) * 0.9 (EUR rate) = 900
+	assert.Equal(t, int64(900), convertAmountViaUSD(2700, CurrencyGEL, "EUR", 2.7, 0.9))
 }
