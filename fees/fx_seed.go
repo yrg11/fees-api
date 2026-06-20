@@ -31,7 +31,7 @@ func SeedFXRates(ctx context.Context, req *SeedFXRatesRequest) (*SeedFXRatesResp
 	totalSeeded := 0
 
 	for _, curr := range currencies {
-		rates, err := fetchHistoricalRatesForCurrency(ctx, Currency(curr.Code), days)
+		rates, err := avFetchDailyRates(ctx, CurrencyUSD, Currency(curr.Code), days)
 		if err != nil {
 			return nil, fmt.Errorf("fetch historical rates for %s: %w", curr.Code, err)
 		}
