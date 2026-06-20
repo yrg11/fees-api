@@ -127,14 +127,30 @@ fees-api/
 ├── fees/                      # "fees" service (package name = service name in Encore)
 │   ├── db.go                  # Database resource declaration
 │   ├── models.go              # Request/response types, domain models
-│   ├── api.go                 # HTTP API endpoints (Encore annotations)
+│   ├── api.go                 # HTTP API endpoints (auth-protected)
+│   ├── auth.go                # API key auth handler + brute-force protection
+│   ├── audit.go               # Audit event logging
+│   ├── ratelimit.go           # Per-customer rate limiting
 │   ├── workflow.go            # Temporal workflow definition (signal-driven)
-│   ├── activities.go          # Temporal activities (DB side-effects)
+│   ├── fx_workflow.go         # FX rate cron workflow (daily at 9am UTC)
+│   ├── activities.go          # Billing activities (DB side-effects)
+│   ├── fx_activities.go       # FX rate fetch/store activities
+│   ├── alphavantage.go        # Alpha Vantage API client
 │   ├── temporal_client.go     # Temporal client helpers (start, signal, query)
 │   ├── worker.go              # Temporal worker setup
-│   ├── repository.go          # Database operations (CRUD)
+│   ├── repository.go          # Billing DB operations + FX conversion (USD triangulation)
+│   ├── customer_api.go        # Customer CRUD endpoints
+│   ├── customer_repository.go # Customer DB operations + API key management
+│   ├── currency_api.go        # Dynamic currency registration
+│   ├── currency_repository.go # Currency DB operations
+│   ├── fx_seed.go             # Historical FX rate seeding utility
+│   ├── service.go             # Encore service init, starts workers
 │   └── migrations/
-│       └── 001_create_billing_tables.up.sql
+│       ├── 001_create_billing_tables.up.sql
+│       ├── 002_create_fx_rates.up.sql
+│       ├── 003_create_customers.up.sql
+│       ├── 004_create_currencies.up.sql
+│       └── 005_add_bills_customer_status_index.up.sql
 ```
 
 ---
@@ -390,11 +406,17 @@ No cron job needed. No external scheduler. Temporal's durable timer handles mont
 
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/bills` | Create a new bill + start workflow |
-| POST | `/bills/:id/line-items` | Signal workflow to add a line item |
-| POST | `/bills/:id/close` | Signal workflow to close the bill |
-| GET | `/bills/:id` | Get bill + line items from DB |
-| GET | `/bills/:id/workflow-state` | Query real-time state from Temporal |
-| GET | `/bills` | List all bills (optional `?status=OPEN\|CLOSED` filter) |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/customers` | public | Create customer, returns API key |
+| GET | `/customers/me` | auth | Get current customer info |
+| POST | `/customers/rotate-key` | auth | Rotate API key |
+| POST | `/bills` | auth | Create a new bill + start workflow |
+| POST | `/bills/:id/line-items` | auth | Signal workflow to add a line item (cross-currency supported) |
+| POST | `/bills/:id/close` | auth | Signal workflow to close the bill |
+| GET | `/bills/:id` | auth | Get bill + line items from DB |
+| GET | `/bills/:id/workflow-state` | auth | Query real-time state from Temporal |
+| GET | `/bills` | auth | List customer's bills (optional `?status=OPEN\|CLOSED`) |
+| GET | `/currencies` | public | List active currencies |
+| POST | `/currencies` | private | Register new currency (admin) |
+| POST | `/fx/seed` | private | Seed historical FX rates (admin) |

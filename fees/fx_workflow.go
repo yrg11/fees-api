@@ -1,6 +1,7 @@
 package fees
 
 import (
+	"fmt"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -32,6 +33,7 @@ func FXRateCronWorkflow(ctx workflow.Context) error {
 	}
 
 	// Fetch and store rate for each currency
+	var failures int
 	for _, currencyCode := range currencies {
 		var fetchOutput FetchFXRateActivityOutput
 		err := workflow.ExecuteActivity(ctx, FetchFXRateActivity, FetchFXRateActivityInput{
@@ -39,8 +41,8 @@ func FXRateCronWorkflow(ctx workflow.Context) error {
 			QuoteCurrency: Currency(currencyCode),
 		}).Get(ctx, &fetchOutput)
 		if err != nil {
-			// Log but continue with other currencies
 			workflow.GetLogger(ctx).Error("failed to fetch rate", "currency", currencyCode, "error", err)
+			failures++
 			continue
 		}
 
@@ -53,7 +55,13 @@ func FXRateCronWorkflow(ctx workflow.Context) error {
 		}).Get(ctx, nil)
 		if err != nil {
 			workflow.GetLogger(ctx).Error("failed to store rate", "currency", currencyCode, "error", err)
+			failures++
 		}
+	}
+
+	// If ALL currencies failed, return error so Temporal marks the run as failed
+	if len(currencies) > 0 && failures == len(currencies) {
+		return fmt.Errorf("fx cron: all %d currencies failed to update", failures)
 	}
 
 	return nil

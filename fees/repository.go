@@ -65,6 +65,9 @@ func convertAmountViaUSD(baseAmountMinor int64, baseCurrency, billCurrency Curre
 // getFXRate retrieves the FX rate for the given date, falling back to the previous day.
 // Returns error if neither date has a rate.
 func getFXRate(ctx context.Context, baseCurrency, quoteCurrency Currency, rateDate time.Time) (FXRate, error) {
+	// Normalize to date-only to avoid time-of-day comparison issues
+	rateDate = rateDate.Truncate(24 * time.Hour)
+
 	const query = `
 		SELECT id, base_currency, quote_currency, rate, rate_date, source, fetched_at
 		FROM fx_rates
@@ -93,7 +96,7 @@ func getFXRate(ctx context.Context, baseCurrency, quoteCurrency Currency, rateDa
 
 	// Only allow the exact date or previous day (not older)
 	dayBefore := rateDate.AddDate(0, 0, -1)
-	if r.RateDate.Before(dayBefore) {
+	if r.RateDate.Truncate(24 * time.Hour).Before(dayBefore) {
 		return FXRate{}, ErrFXRateNotFound
 	}
 
