@@ -11,16 +11,17 @@ import (
 var ErrCurrencyNotFound = errors.New("currency not found")
 
 type CurrencyRecord struct {
-	Code      string    `json:"code"`
-	Name      string    `json:"name"`
-	IsBase    bool      `json:"is_base"`
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"created_at"`
+	Code          string    `json:"code"`
+	Name          string    `json:"name"`
+	DecimalPlaces int       `json:"decimal_places"`
+	IsBase        bool      `json:"is_base"`
+	Active        bool      `json:"active"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 func getCurrency(ctx context.Context, code Currency) (CurrencyRecord, error) {
 	const query = `
-		SELECT code, name, is_base, active, created_at
+		SELECT code, name, decimal_places, is_base, active, created_at
 		FROM currencies
 		WHERE code = $1
 	`
@@ -29,6 +30,7 @@ func getCurrency(ctx context.Context, code Currency) (CurrencyRecord, error) {
 	err := db.QueryRow(ctx, query, code).Scan(
 		&c.Code,
 		&c.Name,
+		&c.DecimalPlaces,
 		&c.IsBase,
 		&c.Active,
 		&c.CreatedAt,
@@ -46,7 +48,7 @@ func getCurrency(ctx context.Context, code Currency) (CurrencyRecord, error) {
 
 func listActiveCurrencies(ctx context.Context) ([]CurrencyRecord, error) {
 	const query = `
-		SELECT code, name, is_base, active, created_at
+		SELECT code, name, decimal_places, is_base, active, created_at
 		FROM currencies
 		WHERE active = TRUE
 		ORDER BY is_base DESC, code ASC
@@ -61,7 +63,7 @@ func listActiveCurrencies(ctx context.Context) ([]CurrencyRecord, error) {
 	var currencies []CurrencyRecord
 	for rows.Next() {
 		var c CurrencyRecord
-		if err := rows.Scan(&c.Code, &c.Name, &c.IsBase, &c.Active, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.Code, &c.Name, &c.DecimalPlaces, &c.IsBase, &c.Active, &c.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan currency: %w", err)
 		}
 		currencies = append(currencies, c)
@@ -73,7 +75,7 @@ func listActiveCurrencies(ctx context.Context) ([]CurrencyRecord, error) {
 // listActiveNonBaseCurrencies returns all active currencies except the base (USD).
 func listActiveNonBaseCurrencies(ctx context.Context) ([]CurrencyRecord, error) {
 	const query = `
-		SELECT code, name, is_base, active, created_at
+		SELECT code, name, decimal_places, is_base, active, created_at
 		FROM currencies
 		WHERE active = TRUE AND is_base = FALSE
 		ORDER BY code ASC
@@ -88,7 +90,7 @@ func listActiveNonBaseCurrencies(ctx context.Context) ([]CurrencyRecord, error) 
 	var currencies []CurrencyRecord
 	for rows.Next() {
 		var c CurrencyRecord
-		if err := rows.Scan(&c.Code, &c.Name, &c.IsBase, &c.Active, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.Code, &c.Name, &c.DecimalPlaces, &c.IsBase, &c.Active, &c.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan currency: %w", err)
 		}
 		currencies = append(currencies, c)
@@ -97,17 +99,18 @@ func listActiveNonBaseCurrencies(ctx context.Context) ([]CurrencyRecord, error) 
 	return currencies, rows.Err()
 }
 
-func insertCurrency(ctx context.Context, code Currency, name string) (CurrencyRecord, error) {
+func insertCurrency(ctx context.Context, code Currency, name string, decimalPlaces int) (CurrencyRecord, error) {
 	const query = `
-		INSERT INTO currencies (code, name, is_base, active)
-		VALUES ($1, $2, FALSE, TRUE)
-		RETURNING code, name, is_base, active, created_at
+		INSERT INTO currencies (code, name, decimal_places, is_base, active)
+		VALUES ($1, $2, $3, FALSE, TRUE)
+		RETURNING code, name, decimal_places, is_base, active, created_at
 	`
 
 	var c CurrencyRecord
-	err := db.QueryRow(ctx, query, code, name).Scan(
+	err := db.QueryRow(ctx, query, code, name, decimalPlaces).Scan(
 		&c.Code,
 		&c.Name,
+		&c.DecimalPlaces,
 		&c.IsBase,
 		&c.Active,
 		&c.CreatedAt,

@@ -12,8 +12,9 @@ import (
 var currencyCodeRegex = regexp.MustCompile(`^[A-Z]{3}$`)
 
 type AddCurrencyRequest struct {
-	Code string `json:"code"` // ISO 4217 currency code (e.g., "EUR", "GBP")
-	Name string `json:"name"` // Display name (e.g., "Euro", "British Pound")
+	Code          string `json:"code"`           // ISO 4217 currency code (e.g., "EUR", "GBP")
+	Name          string `json:"name"`           // Display name (e.g., "Euro", "British Pound")
+	DecimalPlaces int    `json:"decimal_places"` // Number of minor unit digits (e.g., 2 for USD/EUR, 0 for JPY, 3 for BHD)
 }
 
 type AddCurrencyResponse struct {
@@ -35,6 +36,9 @@ func AddCurrency(ctx context.Context, req *AddCurrencyRequest) (*AddCurrencyResp
 	}
 	if req.Name == "" {
 		return nil, &errs.Error{Code: errs.InvalidArgument, Message: "currency name is required"}
+	}
+	if req.DecimalPlaces < 0 || req.DecimalPlaces > 4 {
+		return nil, &errs.Error{Code: errs.InvalidArgument, Message: "decimal_places must be between 0 and 4"}
 	}
 
 	code := Currency(req.Code)
@@ -73,12 +77,13 @@ func AddCurrency(ctx context.Context, req *AddCurrencyRequest) (*AddCurrencyResp
 	// Insert currency
 	var currencyRecord CurrencyRecord
 	err = tx.QueryRow(ctx, `
-		INSERT INTO currencies (code, name, is_base, active)
-		VALUES ($1, $2, FALSE, TRUE)
-		RETURNING code, name, is_base, active, created_at
-	`, code, req.Name).Scan(
+		INSERT INTO currencies (code, name, decimal_places, is_base, active)
+		VALUES ($1, $2, $3, FALSE, TRUE)
+		RETURNING code, name, decimal_places, is_base, active, created_at
+	`, code, req.Name, req.DecimalPlaces).Scan(
 		&currencyRecord.Code,
 		&currencyRecord.Name,
+		&currencyRecord.DecimalPlaces,
 		&currencyRecord.IsBase,
 		&currencyRecord.Active,
 		&currencyRecord.CreatedAt,

@@ -32,6 +32,26 @@ func AddLineItemActivity(ctx context.Context, input AddLineItemActivityInput) (A
 	}, nil
 }
 
+type CancelLineItemActivityInput struct {
+	BillID     int64 `json:"bill_id"`
+	LineItemID int64 `json:"line_item_id"`
+}
+
+type CancelLineItemActivityOutput struct {
+	CancelledItem LineItem `json:"cancelled_item"`
+}
+
+func CancelLineItemActivity(ctx context.Context, input CancelLineItemActivityInput) (CancelLineItemActivityOutput, error) {
+	item, err := cancelLineItem(ctx, input.BillID, input.LineItemID)
+	if err != nil {
+		return CancelLineItemActivityOutput{}, err
+	}
+
+	return CancelLineItemActivityOutput{
+		CancelledItem: item,
+	}, nil
+}
+
 func CloseBillActivity(ctx context.Context, input CloseBillActivityInput) (CloseBillActivityOutput, error) {
 	bill, items, err := closeBill(ctx, input.BillID)
 	if err != nil {

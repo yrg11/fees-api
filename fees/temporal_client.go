@@ -71,6 +71,24 @@ func signalAddLineItem(ctx context.Context, billID int64, signal AddLineItemSign
 	return nil
 }
 
+// signalCancelLineItem sends a CancelLineItem signal to the bill's workflow.
+func signalCancelLineItem(ctx context.Context, billID int64, lineItemID int64) error {
+	c, err := getTemporalClient()
+	if err != nil {
+		return fmt.Errorf("connect temporal: %w", err)
+	}
+
+	workflowID := workflowIDForBill(billID)
+	err = c.SignalWorkflow(ctx, workflowID, "", SignalCancelLineItem, CancelLineItemSignal{
+		LineItemID: lineItemID,
+	})
+	if err != nil {
+		return fmt.Errorf("signal cancel line item: %w", err)
+	}
+
+	return nil
+}
+
 // signalCloseBill sends a CloseBill signal to the bill's workflow.
 func signalCloseBill(ctx context.Context, billID int64, reason string) error {
 	c, err := getTemporalClient()

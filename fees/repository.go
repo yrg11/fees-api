@@ -592,6 +592,72 @@ func addLineItem(ctx context.Context, billID int64, req AddLineItemRequest) (Lin
 	return item, nil
 }
 
+var ErrLineItemNotFound = errors.New("line item not found")
+
+// cancelLineItem removes a line item from an open bill and decrements the running total.
+func cancelLineItem(ctx context.Context, billID, lineItemID int64) (LineItem, error) {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return LineItem{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Lock the bill and verify it's still open
+	var billStatus BillStatus
+	err = tx.QueryRow(ctx, `
+		SELECT status FROM bills WHERE id = $1 FOR UPDATE
+	`, billID).Scan(&billStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LineItem{}, ErrBillNotFound
+	}
+	if err != nil {
+		return LineItem{}, fmt.Errorf("lock bill: %w", err)
+	}
+	if billStatus == BillStatusClosed {
+		return LineItem{}, ErrBillAlreadyClosed
+	}
+
+	// Delete the line item and return it
+	var item LineItem
+	err = tx.QueryRow(ctx, `
+		DELETE FROM bill_line_items
+		WHERE id = $1 AND bill_id = $2
+		RETURNING id, bill_id, description, base_currency, base_amount_minor,
+		          bill_currency, bill_amount_minor, fx_rate, fx_rate_date, created_at
+	`, lineItemID, billID).Scan(
+		&item.ID,
+		&item.BillID,
+		&item.Description,
+		&item.BaseCurrency,
+		&item.BaseAmountMinor,
+		&item.BillCurrency,
+		&item.BillAmountMinor,
+		&item.FXRate,
+		&item.FXRateDate,
+		&item.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LineItem{}, ErrLineItemNotFound
+	}
+	if err != nil {
+		return LineItem{}, fmt.Errorf("delete line item: %w", err)
+	}
+
+	// Decrement the bill's running total
+	_, err = tx.Exec(ctx, `
+		UPDATE bills SET total_amount_minor = total_amount_minor - $2 WHERE id = $1
+	`, billID, item.BillAmountMinor)
+	if err != nil {
+		return LineItem{}, fmt.Errorf("update bill total: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return LineItem{}, fmt.Errorf("commit cancel line item: %w", err)
+	}
+
+	return item, nil
+}
+
 func closeBill(ctx context.Context, billID int64) (Bill, []LineItem, error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {

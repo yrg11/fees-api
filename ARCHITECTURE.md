@@ -150,7 +150,8 @@ fees-api/
 │       ├── 002_create_fx_rates.up.sql
 │       ├── 003_create_customers.up.sql
 │       ├── 004_create_currencies.up.sql
-│       └── 005_add_bills_customer_status_index.up.sql
+│       ├── 005_add_bills_customer_status_index.up.sql
+│       └── 006_add_decimal_places.up.sql
 ```
 
 ---
@@ -354,16 +355,112 @@ This lets you get the **real-time** bill state (items, total, status) directly f
 
 ### 1. Money stored as `int64` (minor units)
 
-```go
-TotalAmountMinor int64  // 2999 = $29.99
-AmountMinor      int64  // cents for USD, tetri for GEL
+All monetary values are stored as **integers representing the smallest denomination** of a currency — not as decimals or floats. This is the same approach used by Stripe, Adyen, and most payment processors.
+
+#### What are minor units?
+
+Every currency has a "minor unit" — the smallest coin or subdivision:
+
+| Currency | Minor unit | Name | Example |
+|----------|-----------|------|---------|
+| USD | 1/100 dollar | cent | `$29.99` → `2999` |
+| GEL | 1/100 lari | tetri | `₾5.50` → `550` |
+| JPY | 1 yen (no subdivision) | — | `¥1000` → `1000` |
+
+Instead of storing `29.99` as a float or decimal, we store `2999` as an integer. The API consumer and display layer are responsible for dividing by 100 (or the appropriate factor) when presenting to users.
+
+#### Where minor units appear in the codebase
+
+**Database schema** — all money columns are `BIGINT`:
+```sql
+-- bills table
+total_amount_minor BIGINT NOT NULL DEFAULT 0
+
+-- bill_line_items table
+base_amount_minor BIGINT NOT NULL   -- amount in the line item's original currency
+bill_amount_minor BIGINT NOT NULL   -- converted amount in the bill's currency
 ```
 
-**Why not float?** Floating-point arithmetic causes rounding errors (`0.1 + 0.2 != 0.3`). Financial systems must be exact.
+**Go structs** — all money fields are `int64`:
+```go
+type Bill struct {
+    TotalAmountMinor int64  // running total in bill currency
+}
 
-**Why not string?** Can't do arithmetic without parsing.
+type LineItem struct {
+    BaseAmountMinor int64  // original amount (e.g., 5000 = 50.00 GEL)
+    BillAmountMinor int64  // converted amount (e.g., 1818 = $18.18)
+}
+```
 
-**Why int64 over int?** int64 gives a guaranteed 64-bit range (~9.2 quintillion) regardless of platform.
+**API requests** — clients send integer amounts:
+```json
+{
+  "description": "Monthly subscription",
+  "amount_minor": 4999,
+  "currency": "USD"
+}
+```
+
+#### Why not `float64`?
+
+IEEE 754 floating-point cannot represent all decimal fractions exactly:
+```
+0.1 + 0.2 == 0.30000000000000004  (not 0.3)
+```
+
+Over thousands of line items, these errors compound. A billing system that's off by even one cent per transaction is broken. Integers eliminate this entirely: `10 + 20 == 30`, always.
+
+#### Why not `NUMERIC`/`DECIMAL` in the database?
+
+PostgreSQL `NUMERIC` is exact, but:
+- Slower for aggregation (SUM) and comparison than `BIGINT`
+- Requires more storage (variable-length vs fixed 8 bytes)
+- Still needs application-layer handling of scale/precision
+
+`BIGINT` is simpler, faster, and equally exact for discrete minor units.
+
+#### Why `int64` over `int`?
+
+`int64` is explicitly 64-bit on all platforms (~9.2 quintillion maximum). Plain `int` is 32-bit on some architectures, which maxes out at ~$21 million in cents — too small for production billing.
+
+#### The one place floats appear: FX rates
+
+FX rates (`fx_rates.rate`) are stored as `NUMERIC(18,8)` in the DB and `float64` in Go. This is acceptable because:
+- Rates are **multipliers**, not money — precision loss in the 8th decimal is negligible
+- The conversion result is immediately rounded to the nearest minor unit via `math.Round`, making the final monetary value exact
+
+#### Cross-currency conversion example
+
+A line item of **50.00 GEL** on a **USD bill** with FX rate `1 USD = 2.75 GEL`:
+
+```
+Input:  base_amount_minor = 5000       (50.00 GEL in tetri)
+Step 1: Convert to float for division:  float64(5000) / 2.75 = 1818.18...
+Step 2: Round to nearest minor unit:    math.Round(1818.18) = 1818
+Output: bill_amount_minor = 1818       ($18.18 in cents, stored as int64)
+```
+
+The code (`repository.go`):
+```go
+func convertAmountViaUSD(baseAmountMinor int64, baseCurrency, billCurrency Currency, rateBase, rateBill float64) int64 {
+    if billCurrency == CurrencyUSD {
+        return int64(math.Round(float64(baseAmountMinor) / rateBase))
+    }
+    // ... other cases
+}
+```
+
+Both `5000` and `1818` are stored as exact integers. The float exists only for the brief multiplication/division step, then is immediately rounded back to a discrete integer.
+
+#### Running total
+
+The bill's `total_amount_minor` is updated atomically on each line item addition:
+```sql
+UPDATE bills SET total_amount_minor = total_amount_minor + $2 WHERE id = $1
+```
+
+Since both values are integers, this addition is always exact — no drift over time.
 
 ### 2. Dual state: Temporal + PostgreSQL
 
@@ -413,6 +510,7 @@ No cron job needed. No external scheduler. Temporal's durable timer handles mont
 | POST | `/customers/rotate-key` | auth | Rotate API key |
 | POST | `/bills` | auth | Create a new bill + start workflow |
 | POST | `/bills/:id/line-items` | auth | Signal workflow to add a line item (cross-currency supported) |
+| DELETE | `/bills/:id/line-items/:itemId` | auth | Signal workflow to cancel a line item |
 | POST | `/bills/:id/close` | auth | Signal workflow to close the bill |
 | GET | `/bills/:id` | auth | Get bill + line items from DB |
 | GET | `/bills/:id/workflow-state` | auth | Query real-time state from Temporal |
