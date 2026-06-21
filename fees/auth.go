@@ -34,13 +34,15 @@ func AuthHandler(ctx context.Context, token string) (auth.UID, *AuthData, error)
 
 	keyHash := hashAPIKey(token)
 
-	// Brute-force protection: rate limit by key hash before DB lookup
+	// Brute-force protection: check if this key hash has too many failed attempts
 	if err := checkBruteForceLimit(ctx, keyHash); err != nil {
 		return "", nil, &errs.Error{Code: errs.ResourceExhausted, Message: "too many attempts"}
 	}
 
 	customer, err := getCustomerByAPIKeyHash(ctx, keyHash)
 	if err != nil {
+		// Only increment brute-force counter on failed lookups
+		incrementBruteForceCounter(ctx, keyHash)
 		logAuditEvent(ctx, "", AuditEventAuthFailure, AuditDetail{
 			"reason":     "invalid_key",
 			"key_prefix": apiKeyPrefix(token),
