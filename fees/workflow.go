@@ -11,8 +11,9 @@ const FeeTaskQueue = "fees-task-queue"
 
 // Signal names used to communicate with the running workflow.
 const (
-	SignalAddLineItem = "add_line_item"
-	SignalCloseBill   = "close_bill"
+	SignalAddLineItem    = "add_line_item"
+	SignalCancelLineItem = "cancel_line_item"
+	SignalCloseBill      = "close_bill"
 )
 
 // Query name to retrieve current workflow state.
@@ -33,6 +34,11 @@ type AddLineItemSignal struct {
 	AmountMinor int64    `json:"amount_minor"`
 	Currency    Currency `json:"currency"`
 	Date        string   `json:"date"` // YYYY-MM-DD for FX rate lookup
+}
+
+// CancelLineItemSignal is the payload sent via the CancelLineItem signal.
+type CancelLineItemSignal struct {
+	LineItemID int64 `json:"line_item_id"`
 }
 
 // CloseBillSignal is the payload sent via the CloseBill signal.
@@ -100,6 +106,7 @@ func FeePeriodWorkflow(ctx workflow.Context, input FeePeriodWorkflowInput) (FeeP
 
 	// Signal channels.
 	addLineItemCh := workflow.GetSignalChannel(ctx, SignalAddLineItem)
+	cancelLineItemCh := workflow.GetSignalChannel(ctx, SignalCancelLineItem)
 	closeBillCh := workflow.GetSignalChannel(ctx, SignalCloseBill)
 
 	// Calculate how long until the period ends.
@@ -148,6 +155,33 @@ func FeePeriodWorkflow(ctx workflow.Context, input FeePeriodWorkflowInput) (FeeP
 			}
 		})
 
+		// Handle cancel line item signal.
+		selector.AddReceive(cancelLineItemCh, func(c workflow.ReceiveChannel, more bool) {
+			var signal CancelLineItemSignal
+			c.Receive(ctx, &signal)
+
+			if state.Status == BillStatusClosed {
+				return
+			}
+
+			var output CancelLineItemActivityOutput
+			err := workflow.ExecuteActivity(ctx, CancelLineItemActivity, CancelLineItemActivityInput{
+				BillID:     input.BillID,
+				LineItemID: signal.LineItemID,
+			}).Get(ctx, &output)
+
+			if err == nil {
+				// Remove from workflow state and decrement total
+				for i, item := range state.LineItems {
+					if item.ID == signal.LineItemID {
+						state.TotalAmountMinor -= item.BillAmountMinor
+						state.LineItems = append(state.LineItems[:i], state.LineItems[i+1:]...)
+						break
+					}
+				}
+			}
+		})
+
 		// Handle close bill signal.
 		selector.AddReceive(closeBillCh, func(c workflow.ReceiveChannel, more bool) {
 			var signal CloseBillSignal
@@ -181,7 +215,7 @@ func FeePeriodWorkflow(ctx workflow.Context, input FeePeriodWorkflowInput) (FeeP
 	timerCancel()
 
 	// Drain any remaining signals that arrived after close.
-	drainSignals(ctx, addLineItemCh, closeBillCh)
+	drainSignals(ctx, addLineItemCh, cancelLineItemCh, closeBillCh)
 
 	return FeePeriodWorkflowResult{
 		BillID:           state.BillID,
@@ -208,10 +242,16 @@ func doCloseBill(ctx workflow.Context, state *BillWorkflowState) {
 }
 
 // drainSignals consumes any buffered signals so the workflow can complete cleanly.
-func drainSignals(ctx workflow.Context, addCh, closeCh workflow.ReceiveChannel) {
+func drainSignals(ctx workflow.Context, addCh, cancelCh, closeCh workflow.ReceiveChannel) {
 	for {
 		var signal AddLineItemSignal
 		if ok := addCh.ReceiveAsync(&signal); !ok {
+			break
+		}
+	}
+	for {
+		var signal CancelLineItemSignal
+		if ok := cancelCh.ReceiveAsync(&signal); !ok {
 			break
 		}
 	}

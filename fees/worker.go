@@ -16,6 +16,7 @@ func StartTemporalWorker() error {
 	w := worker.New(c, FeeTaskQueue, worker.Options{})
 	w.RegisterWorkflow(FeePeriodWorkflow)
 	w.RegisterActivity(AddLineItemActivity)
+	w.RegisterActivity(CancelLineItemActivity)
 	w.RegisterActivity(CloseBillActivity)
 
 	// FX rate worker

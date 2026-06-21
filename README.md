@@ -157,6 +157,15 @@ curl -X POST http://localhost:4000/bills/1/line-items \
 
 If the line item currency differs from the bill currency, the system automatically converts the amount using the FX rate for the specified date (with previous-day fallback). Conversion uses USD triangulation.
 
+#### Cancel a Line Item
+
+Removes a line item from an open bill and decrements the running total.
+
+```bash
+curl -X DELETE http://localhost:4000/bills/1/line-items/1 \
+  -H "Authorization: Bearer fee_..."
+```
+
 #### Close a Bill
 
 ```bash
@@ -191,8 +200,10 @@ curl http://localhost:4000/currencies
 ```bash
 curl -X POST http://localhost:4000/currencies \
   -H "Content-Type: application/json" \
-  -d '{"code": "EUR", "name": "Euro"}'
+  -d '{"code": "EUR", "name": "Euro", "decimal_places": 2}'
 ```
+
+The `decimal_places` field indicates how many digits represent the minor unit (e.g., 2 for USD/EUR/GEL, 0 for JPY, 3 for BHD). Valid range: 0–4.
 
 Adding a currency verifies Alpha Vantage data availability and atomically seeds 30 days of historical rates.
 
@@ -226,10 +237,12 @@ When adding a cross-currency line item, the system looks up the FX rate for the 
 
 ### Money as `int64` (Minor Units)
 
-All monetary values are stored in **minor units** (cents for USD, tetri for GEL):
-- `$29.99` → `2999`
-- Avoids floating-point precision errors (`0.1 + 0.2 ≠ 0.3`)
-- Safe integer arithmetic for addition and summation
+All monetary values are stored in **minor units** — the smallest denomination of each currency:
+- USD (2 decimal places): `$29.99` → `2999`
+- GEL (2 decimal places): `₾5.50` → `550`
+- JPY (0 decimal places): `¥1000` → `1000`
+
+Each currency's `decimal_places` field tells consumers how to convert between minor units and display values (divide by `10^decimal_places`). This avoids floating-point precision errors (`0.1 + 0.2 ≠ 0.3`) and ensures safe integer arithmetic for all summation.
 
 ### Temporal Signals for Mutations
 
@@ -301,5 +314,6 @@ fees-api/
         ├── 002_create_fx_rates.up.sql
         ├── 003_create_customers.up.sql
         ├── 004_create_currencies.up.sql
-        └── 005_add_bills_customer_status_index.up.sql
+        ├── 005_add_bills_customer_status_index.up.sql
+        └── 006_add_decimal_places.up.sql
 ```

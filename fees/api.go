@@ -92,6 +92,38 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 	}, nil
 }
 
+type CancelLineItemResponse struct {
+	Accepted   bool  `json:"accepted"`
+	BillID     int64 `json:"bill_id"`
+	LineItemID int64 `json:"line_item_id"`
+}
+
+// CancelLineItem sends a signal to the bill's Temporal workflow to cancel a line item.
+//
+//encore:api auth method=DELETE path=/bills/:billID/line-items/:lineItemID
+func CancelLineItem(ctx context.Context, billID int64, lineItemID int64) (*CancelLineItemResponse, error) {
+	// Check bill exists, is open, and belongs to this customer.
+	bill, err := authorizeBillAccess(ctx, billID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if bill.Status == BillStatusClosed {
+		return nil, mapError(ErrBillAlreadyClosed)
+	}
+
+	// Send cancel signal to the workflow.
+	err = signalCancelLineItem(ctx, billID, lineItemID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	return &CancelLineItemResponse{
+		Accepted:   true,
+		BillID:     billID,
+		LineItemID: lineItemID,
+	}, nil
+}
+
 // CloseBill sends a signal to the bill's Temporal workflow to close it.
 //
 //encore:api auth method=POST path=/bills/:billID/close
@@ -199,6 +231,8 @@ func mapError(err error) error {
 		return &errs.Error{Code: errs.NotFound, Message: err.Error()}
 	case isErr(err, ErrBillAlreadyClosed):
 		return &errs.Error{Code: errs.FailedPrecondition, Message: err.Error()}
+	case isErr(err, ErrLineItemNotFound):
+		return &errs.Error{Code: errs.NotFound, Message: err.Error()}
 	case isErr(err, ErrCurrencyMismatch):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
 	case isErr(err, ErrInvalidCurrency):
