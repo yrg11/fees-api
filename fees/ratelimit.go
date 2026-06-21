@@ -42,10 +42,33 @@ func checkRateLimit(ctx context.Context, customerID string) error {
 	return nil
 }
 
-// checkBruteForceLimit rate-limits by key hash to prevent brute-force key guessing.
-// Uses the same rate_limit_entries table with a "bf:" prefix on the identifier.
+// checkBruteForceLimit checks if this key hash has exceeded the brute-force attempt limit.
+// It only reads the current count without incrementing.
 func checkBruteForceLimit(ctx context.Context, keyHash string) error {
-	// Use first 16 chars of hash as identifier to save space
+	identifier := "bf:" + keyHash[:16]
+	windowStart := time.Now().UTC().Truncate(RateLimitWindow)
+
+	const query = `
+		SELECT request_count FROM rate_limit_entries
+		WHERE customer_id = $1 AND window_start = $2
+	`
+
+	var count int
+	err := db.QueryRow(ctx, query, identifier, windowStart).Scan(&count)
+	if err != nil {
+		// No row means no failed attempts yet — allow through.
+		return nil
+	}
+
+	if count >= BruteForceMaxAttempts {
+		return ErrRateLimited
+	}
+
+	return nil
+}
+
+// incrementBruteForceCounter records a failed auth attempt for brute-force tracking.
+func incrementBruteForceCounter(ctx context.Context, keyHash string) {
 	identifier := "bf:" + keyHash[:16]
 	windowStart := time.Now().UTC().Truncate(RateLimitWindow)
 
@@ -54,18 +77,7 @@ func checkBruteForceLimit(ctx context.Context, keyHash string) error {
 		VALUES ($1, $2, 1)
 		ON CONFLICT (customer_id, window_start)
 		DO UPDATE SET request_count = rate_limit_entries.request_count + 1
-		RETURNING request_count
 	`
 
-	var count int
-	err := db.QueryRow(ctx, query, identifier, windowStart).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("check brute force limit: %w", err)
-	}
-
-	if count > BruteForceMaxAttempts {
-		return ErrRateLimited
-	}
-
-	return nil
+	_, _ = db.Exec(ctx, query, identifier, windowStart)
 }
