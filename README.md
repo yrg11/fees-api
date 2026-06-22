@@ -10,7 +10,7 @@ Each bill is represented as a Temporal workflow that:
 3. Auto-closes at period end (or can be manually closed via signal)
 4. Persists all state to PostgreSQL via activities
 
-Temporal is treated as the **first-class store of state** — all mutations flow through the workflow as signals, ensuring sequential processing and crash recovery.
+**PostgreSQL is the system of record** for all billing data (bills, line items, totals). **Temporal owns sequencing and durability** — all mutations flow through the workflow as signals, ensuring sequential processing, at-least-once delivery, and automatic period-end close via durable timers. The workflow persists state to Postgres via activities.
 
 ## Architecture
 
@@ -203,7 +203,7 @@ curl "http://localhost:4000/bills?status=OPEN" \
 curl http://localhost:4000/currencies
 ```
 
-#### Add Currency (private — admin only)
+#### Add Currency (private — internal service mesh only)
 
 ```bash
 curl -X POST http://localhost:4000/currencies \
@@ -215,7 +215,7 @@ The `decimal_places` field indicates how many digits represent the minor unit (e
 
 Adding a currency verifies Alpha Vantage data availability and atomically seeds 30 days of historical rates.
 
-### FX Seed (private — admin only)
+### FX Seed (private — internal service mesh only)
 
 ```bash
 curl -X POST http://localhost:4000/fx/seed \
@@ -264,12 +264,12 @@ All bill modifications (add line item, close) go through Temporal signals rather
 
 Bill creation is atomic with respect to Temporal workflow startup. If the workflow fails to start, the bill row is rolled back (deleted), preventing orphaned bills with no workflow driving them.
 
-### Dual State Store
+### State Architecture
 
-- **Temporal** = authoritative state for active bills (real-time via query)
-- **PostgreSQL** = queryable store for listing, filtering, and reporting
+- **PostgreSQL** = system of record for all billing data (queryable, reportable, durable)
+- **Temporal** = sequencing layer that owns mutation ordering, retry logic, and durable timers
 
-Activities persist to the database, keeping both in sync. The DB is eventually consistent with the workflow (milliseconds delay).
+Activities persist to the database as the authoritative store. The workflow maintains an in-memory projection for real-time queries (via `GET /bills/:id/workflow-state`) that is consistent with Postgres within milliseconds.
 
 ### Customer Isolation
 

@@ -3,6 +3,7 @@ package fees
 import (
 	"context"
 	"log"
+	"time"
 
 	"go.temporal.io/sdk/client"
 )
@@ -23,6 +24,15 @@ func initService() (*Service, error) {
 	go func() {
 		if err := startFXCronWorkflow(); err != nil {
 			log.Printf("failed to start FX cron workflow: %v", err)
+		}
+	}()
+
+	// Periodic cleanup of old audit log entries (every 24 hours).
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanupOldAuditLogs(context.Background())
 		}
 	}()
 

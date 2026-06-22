@@ -47,18 +47,26 @@ type CloseBillSignal struct {
 	Reason string `json:"reason"`
 }
 
+// FailedSignal records a signal that could not be processed after retries.
+type FailedSignal struct {
+	SignalType string `json:"signal_type"`
+	Error      string `json:"error"`
+	Payload    string `json:"payload,omitempty"`
+}
+
 // BillWorkflowState represents the workflow's in-memory state, queryable externally.
 type BillWorkflowState struct {
-	BillID           int64      `json:"bill_id"`
-	CustomerID       string     `json:"customer_id"`
-	Currency         Currency   `json:"currency"`
-	Status           BillStatus `json:"status"`
-	PeriodStart      time.Time  `json:"period_start"`
-	PeriodEnd        time.Time  `json:"period_end"`
-	TotalAmountMinor int64      `json:"total_amount_minor"`
-	LineItems        []LineItem `json:"line_items"`
-	ClosedAt         *time.Time `json:"closed_at,omitempty"`
-	CloseReason      string     `json:"close_reason,omitempty"`
+	BillID           int64          `json:"bill_id"`
+	CustomerID       string         `json:"customer_id"`
+	Currency         Currency       `json:"currency"`
+	Status           BillStatus     `json:"status"`
+	PeriodStart      time.Time      `json:"period_start"`
+	PeriodEnd        time.Time      `json:"period_end"`
+	TotalAmountMinor int64          `json:"total_amount_minor"`
+	LineItems        []LineItem     `json:"line_items"`
+	FailedSignals    []FailedSignal `json:"failed_signals,omitempty"`
+	ClosedAt         *time.Time     `json:"closed_at,omitempty"`
+	CloseReason      string         `json:"close_reason,omitempty"`
 }
 
 // FeePeriodWorkflowResult is returned when the workflow completes.
@@ -153,10 +161,11 @@ func FeePeriodWorkflow(ctx workflow.Context, input FeePeriodWorkflowInput) (FeeP
 			err := workflow.ExecuteActivity(ctx, AddLineItemActivity, AddLineItemActivityInput{
 				BillID: input.BillID,
 				Input: AddLineItemRequest{
-					Description: signal.Description,
-					AmountMinor: signal.AmountMinor,
-					Currency:    signal.Currency,
-					Date:        signal.Date,
+					IdempotencyKey: signal.IdempotencyKey,
+					Description:    signal.Description,
+					AmountMinor:    signal.AmountMinor,
+					Currency:       signal.Currency,
+					Date:           signal.Date,
 				},
 			}).Get(ctx, &output)
 
@@ -166,6 +175,13 @@ func FeePeriodWorkflow(ctx workflow.Context, input FeePeriodWorkflowInput) (FeeP
 				}
 				state.LineItems = append(state.LineItems, output.LineItem)
 				state.TotalAmountMinor += output.LineItem.BillAmountMinor
+			} else {
+				workflow.GetLogger(ctx).Error("add line item failed", "error", err, "description", signal.Description)
+				state.FailedSignals = append(state.FailedSignals, FailedSignal{
+					SignalType: SignalAddLineItem,
+					Error:      err.Error(),
+					Payload:    signal.Description,
+				})
 			}
 		})
 
@@ -193,6 +209,12 @@ func FeePeriodWorkflow(ctx workflow.Context, input FeePeriodWorkflowInput) (FeeP
 						break
 					}
 				}
+			} else {
+				workflow.GetLogger(ctx).Error("cancel line item failed", "error", err, "line_item_id", signal.LineItemID)
+				state.FailedSignals = append(state.FailedSignals, FailedSignal{
+					SignalType: SignalCancelLineItem,
+					Error:      err.Error(),
+				})
 			}
 		})
 

@@ -113,8 +113,8 @@ Temporalite is a lightweight, single-binary version of Temporal for local develo
 ```
 
 - **Encore** handles: HTTP API, database, request/response serialization, local dev environment
-- **Temporal** handles: Durable workflow state, signal processing, automatic retries, timer-based auto-close
-- **Database** is the read-optimized store (for queries/listing), while **Temporal** is the authoritative state (for mutations)
+- **Temporal** handles: Mutation sequencing, signal processing, automatic retries, durable timer-based auto-close
+- **PostgreSQL** is the system of record (all reads, all persistent state), while **Temporal** owns the ordering and delivery guarantees for mutations
 
 ---
 
@@ -215,7 +215,7 @@ Client → POST /bills/:id/line-items → AddLineItem (api.go)
                                           └─────────────────────┘
 ```
 
-**Key insight**: The API doesn't write to the DB directly. It sends a signal. The workflow receives it, persists via an activity, and updates its own state. This makes Temporal the "first-class store of state."
+**Key insight**: The API doesn't write to the DB directly for mutations. It sends a signal. The workflow receives it, persists via an activity (writing to PostgreSQL as the system of record), and updates its in-memory projection. Temporal owns the sequencing; Postgres owns the data.
 
 ### 3. Closing a Bill (via Signal)
 
@@ -497,12 +497,12 @@ if err != nil {
 
 This prevents "zombie" bills sitting OPEN forever with no workflow to process signals or auto-close.
 
-### 4. Dual state: Temporal + PostgreSQL
+### 4. State architecture: PostgreSQL as system of record
 
-- **Temporal** = authoritative state for active bills (real-time, signal-driven)
-- **PostgreSQL** = queryable store for all bills (supports listing, filtering, reporting)
+- **PostgreSQL** = system of record for all billing data (bills, line items, totals, customers)
+- **Temporal** = sequencing and delivery layer that ensures mutations are processed exactly once, in order, with automatic retries
 
-The workflow persists to DB via activities, so both stay in sync. The DB is eventually consistent with the workflow (milliseconds delay).
+The workflow persists to DB via activities. The workflow also maintains an in-memory projection (queryable via `GET /bills/:id/workflow-state`) for real-time visibility into the processing pipeline. All read endpoints serve from Postgres.
 
 ### 5. Async acknowledgment for mutations
 
@@ -553,5 +553,5 @@ The Temporal host defaults to `localhost:7233`. For production, set the `Tempora
 | GET | `/bills/:id/workflow-state` | auth | Query real-time state from Temporal |
 | GET | `/bills` | auth | List customer's bills (optional `?status=OPEN\|CLOSED`) |
 | GET | `/currencies` | public | List active currencies |
-| POST | `/currencies` | private | Register new currency (admin) |
-| POST | `/fx/seed` | private | Seed historical FX rates (admin) |
+| POST | `/currencies` | private | Register new currency (internal mesh only, not internet-exposed) |
+| POST | `/fx/seed` | private | Seed historical FX rates (internal mesh only) |

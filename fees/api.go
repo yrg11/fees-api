@@ -96,6 +96,7 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 	return &AddLineItemResponse{
 		Accepted: true,
 		BillID:   billID,
+		Note:     "line item accepted for processing; query the bill or workflow-state to confirm persistence",
 	}, nil
 }
 
@@ -131,7 +132,8 @@ func CancelLineItem(ctx context.Context, billID int64, lineItemID int64) (*Cance
 	}, nil
 }
 
-// CloseBill sends a signal to the bill's Temporal workflow to close it.
+// CloseBill sends a signal to the bill's Temporal workflow to close it,
+// then waits for the close to complete and returns the final bill with all line items.
 //
 //encore:api auth method=POST path=/bills/:billID/close
 func CloseBill(ctx context.Context, billID int64) (*CloseBillResponse, error) {
@@ -141,7 +143,12 @@ func CloseBill(ctx context.Context, billID int64) (*CloseBillResponse, error) {
 		return nil, mapError(err)
 	}
 	if bill.Status == BillStatusClosed {
-		return nil, mapError(ErrBillAlreadyClosed)
+		// Already closed — return current state.
+		items, err := listLineItems(ctx, billID)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		return &CloseBillResponse{Bill: bill, LineItems: items}, nil
 	}
 
 	// Send close signal to the workflow.
@@ -150,10 +157,13 @@ func CloseBill(ctx context.Context, billID int64) (*CloseBillResponse, error) {
 		return nil, mapError(err)
 	}
 
-	return &CloseBillResponse{
-		Accepted: true,
-		BillID:   billID,
-	}, nil
+	// Wait for the workflow to process the close signal by polling until status changes.
+	closedBill, items, err := waitForBillClose(ctx, billID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	return &CloseBillResponse{Bill: closedBill, LineItems: items}, nil
 }
 
 //encore:api auth method=GET path=/bills/:billID

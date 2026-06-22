@@ -29,6 +29,11 @@ func CreateCustomer(ctx context.Context, req *CreateCustomerRequest) (*CreateCus
 		return nil, &errs.Error{Code: errs.InvalidArgument, Message: "email is required"}
 	}
 
+	// Rate-limit public endpoint by email to prevent spam/enumeration.
+	if err := checkPublicEndpointRateLimit(ctx, req.Email); err != nil {
+		return nil, &errs.Error{Code: errs.ResourceExhausted, Message: "too many requests, try again later"}
+	}
+
 	customer, apiKey, err := createCustomer(ctx, req.Name, req.Email)
 	if err != nil {
 		if errors.Is(err, ErrEmailAlreadyTaken) {

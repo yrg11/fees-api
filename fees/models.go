@@ -73,13 +73,14 @@ type AddLineItemRequest struct {
 }
 
 type AddLineItemResponse struct {
-	Accepted bool  `json:"accepted"`
-	BillID   int64 `json:"bill_id"`
+	Accepted bool   `json:"accepted"`
+	BillID   int64  `json:"bill_id"`
+	Note     string `json:"note"` // Explains async processing semantics
 }
 
 type CloseBillResponse struct {
-	Accepted bool  `json:"accepted"`
-	BillID   int64 `json:"bill_id"`
+	Bill      Bill       `json:"bill"`
+	LineItems []LineItem `json:"line_items"`
 }
 
 type GetBillResponse struct {

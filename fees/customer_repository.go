@@ -8,8 +8,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var (
@@ -181,11 +182,11 @@ func rotateAPIKey(ctx context.Context, customerID string) (string, error) {
 	return apiKey, nil
 }
 
-// isUniqueViolation checks if the error is a PostgreSQL unique constraint violation.
+// isUniqueViolation checks if the error is a PostgreSQL unique constraint violation (code 23505).
 func isUniqueViolation(err error) bool {
-	if err == nil {
-		return false
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate")
+	return false
 }
