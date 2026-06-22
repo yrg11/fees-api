@@ -69,11 +69,15 @@ cd fees-api
 ```bash
 # Set the Alpha Vantage API key
 encore secret set --type local AlphaVantageAPIKey
+
+# Set the Temporal host (optional, defaults to localhost:7233)
+encore secret set --type local TemporalHostPort
 ```
 
 Or create a `.secrets.local.cue` file:
 ```cue
 AlphaVantageAPIKey: "your-key-here"
+TemporalHostPort:   "localhost:7233"
 ```
 
 ## Running Locally
@@ -123,6 +127,7 @@ Response includes the API key (shown only once):
 
 - **Per-customer**: 60 requests per minute
 - **Brute-force protection**: 10 failed auth attempts per key hash per minute
+- **Auto-cleanup**: Expired rate limit entries are automatically purged
 
 ## API Endpoints
 
@@ -148,6 +153,7 @@ curl -X POST http://localhost:4000/bills/1/line-items \
   -H "Authorization: Bearer fee_..." \
   -H "Content-Type: application/json" \
   -d '{
+    "idempotency_key": "invoice-42-line-1",
     "description": "API usage - June",
     "amount_minor": 4999,
     "currency": "GEL",
@@ -156,6 +162,8 @@ curl -X POST http://localhost:4000/bills/1/line-items \
 ```
 
 If the line item currency differs from the bill currency, the system automatically converts the amount using the FX rate for the specified date (with previous-day fallback). Conversion uses USD triangulation.
+
+The optional `idempotency_key` field prevents duplicate line items on client retries — if the same key is sent twice, the workflow ignores the second signal.
 
 #### Cancel a Line Item
 
@@ -250,6 +258,11 @@ All bill modifications (add line item, close) go through Temporal signals rather
 - **Sequential processing** — no race conditions between concurrent requests
 - **Durability** — signals are persisted; if the worker crashes, work resumes
 - **Audit trail** — Temporal's event history records every signal
+- **Idempotency** — optional client-provided keys deduplicate retried signals
+
+### Transactional Bill Creation
+
+Bill creation is atomic with respect to Temporal workflow startup. If the workflow fails to start, the bill row is rolled back (deleted), preventing orphaned bills with no workflow driving them.
 
 ### Dual State Store
 
