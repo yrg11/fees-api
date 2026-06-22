@@ -2,7 +2,9 @@ package fees
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"encore.dev/beta/errs"
@@ -30,6 +32,10 @@ func CreateBill(ctx context.Context, req *CreateBillRequest) (*CreateBillRespons
 
 	workflowID, err := startFeeWorkflow(ctx, bill)
 	if err != nil {
+		// Workflow failed to start — delete the orphaned bill so it doesn't sit OPEN forever.
+		if delErr := deleteBill(ctx, bill.ID); delErr != nil {
+			log.Printf("failed to clean up bill %d after workflow start failure: %v", bill.ID, delErr)
+		}
 		return nil, mapError(err)
 	}
 
@@ -55,7 +61,7 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 	if req.AmountMinor <= 0 {
 		return nil, mapError(ErrInvalidAmount)
 	}
-	if err := validateCurrency(req.Currency); err != nil {
+	if err := validateCurrencyExists(ctx, req.Currency); err != nil {
 		return nil, mapError(err)
 	}
 	if req.Date == "" {
@@ -76,10 +82,11 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 
 	// Send signal to the workflow — the workflow will persist via activity.
 	err = signalAddLineItem(ctx, billID, AddLineItemSignal{
-		Description: req.Description,
-		AmountMinor: req.AmountMinor,
-		Currency:    req.Currency,
-		Date:        req.Date,
+		IdempotencyKey: req.IdempotencyKey,
+		Description:    req.Description,
+		AmountMinor:    req.AmountMinor,
+		Currency:       req.Currency,
+		Date:           req.Date,
 	})
 	if err != nil {
 		return nil, mapError(err)
@@ -227,29 +234,26 @@ func authorizeBillAccess(ctx context.Context, billID int64) (Bill, error) {
 
 func mapError(err error) error {
 	switch {
-	case isErr(err, ErrBillNotFound):
+	case errors.Is(err, ErrBillNotFound):
 		return &errs.Error{Code: errs.NotFound, Message: err.Error()}
-	case isErr(err, ErrBillAlreadyClosed):
+	case errors.Is(err, ErrBillAlreadyClosed):
 		return &errs.Error{Code: errs.FailedPrecondition, Message: err.Error()}
-	case isErr(err, ErrLineItemNotFound):
+	case errors.Is(err, ErrLineItemNotFound):
 		return &errs.Error{Code: errs.NotFound, Message: err.Error()}
-	case isErr(err, ErrCurrencyMismatch):
+	case errors.Is(err, ErrCurrencyMismatch):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
-	case isErr(err, ErrInvalidCurrency):
+	case errors.Is(err, ErrInvalidCurrency):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
-	case isErr(err, ErrInvalidAmount):
+	case errors.Is(err, ErrInvalidAmount):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
-	case isErr(err, ErrInvalidPeriod):
+	case errors.Is(err, ErrInvalidPeriod):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
-	case isErr(err, ErrInvalidDate):
+	case errors.Is(err, ErrInvalidDate):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
-	case isErr(err, ErrFXRateNotFound):
+	case errors.Is(err, ErrFXRateNotFound):
 		return &errs.Error{Code: errs.FailedPrecondition, Message: err.Error()}
 	default:
-		return &errs.Error{Code: errs.Internal, Message: err.Error()}
+		log.Printf("internal error: %v", err)
+		return &errs.Error{Code: errs.Internal, Message: "internal error"}
 	}
-}
-
-func isErr(err, target error) bool {
-	return err == target || (err != nil && err.Error() == target.Error())
 }

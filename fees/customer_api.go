@@ -2,6 +2,7 @@ package fees
 
 import (
 	"context"
+	"errors"
 
 	"encore.dev/beta/errs"
 )
@@ -30,7 +31,7 @@ func CreateCustomer(ctx context.Context, req *CreateCustomerRequest) (*CreateCus
 
 	customer, apiKey, err := createCustomer(ctx, req.Name, req.Email)
 	if err != nil {
-		if isErr(err, ErrEmailAlreadyTaken) {
+		if errors.Is(err, ErrEmailAlreadyTaken) {
 			return nil, &errs.Error{Code: errs.AlreadyExists, Message: err.Error()}
 		}
 		return nil, &errs.Error{Code: errs.Internal, Message: err.Error()}
@@ -60,7 +61,7 @@ func RotateKey(ctx context.Context) (*RotateKeyResponse, error) {
 
 	apiKey, err := rotateAPIKey(ctx, customerID)
 	if err != nil {
-		if isErr(err, ErrCustomerNotFound) {
+		if errors.Is(err, ErrCustomerNotFound) {
 			return nil, &errs.Error{Code: errs.NotFound, Message: err.Error()}
 		}
 		return nil, &errs.Error{Code: errs.Internal, Message: err.Error()}

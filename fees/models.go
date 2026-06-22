@@ -65,10 +65,11 @@ type CreateBillResponse struct {
 }
 
 type AddLineItemRequest struct {
-	Description string   `json:"description"`
-	AmountMinor int64    `json:"amount_minor"`
-	Currency    Currency `json:"currency"`
-	Date        string   `json:"date"` // YYYY-MM-DD, used for FX rate lookup
+	IdempotencyKey string   `json:"idempotency_key,omitempty"` // Optional client-provided key to prevent duplicates
+	Description    string   `json:"description"`
+	AmountMinor    int64    `json:"amount_minor"`
+	Currency       Currency `json:"currency"`
+	Date           string   `json:"date"` // YYYY-MM-DD, used for FX rate lookup
 }
 
 type AddLineItemResponse struct {

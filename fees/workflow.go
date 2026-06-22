@@ -30,10 +30,11 @@ type FeePeriodWorkflowInput struct {
 
 // AddLineItemSignal is the payload sent via the AddLineItem signal.
 type AddLineItemSignal struct {
-	Description string   `json:"description"`
-	AmountMinor int64    `json:"amount_minor"`
-	Currency    Currency `json:"currency"`
-	Date        string   `json:"date"` // YYYY-MM-DD for FX rate lookup
+	IdempotencyKey string   `json:"idempotency_key,omitempty"`
+	Description    string   `json:"description"`
+	AmountMinor    int64    `json:"amount_minor"`
+	Currency       Currency `json:"currency"`
+	Date           string   `json:"date"` // YYYY-MM-DD for FX rate lookup
 }
 
 // CancelLineItemSignal is the payload sent via the CancelLineItem signal.
@@ -96,6 +97,9 @@ func FeePeriodWorkflow(ctx workflow.Context, input FeePeriodWorkflowInput) (FeeP
 		LineItems:   []LineItem{},
 	}
 
+	// Track processed idempotency keys to prevent duplicate line items on retries.
+	processedKeys := make(map[string]struct{})
+
 	// Register query handler so external callers can read workflow state.
 	err := workflow.SetQueryHandler(ctx, QueryBillState, func() (BillWorkflowState, error) {
 		return state, nil
@@ -137,6 +141,13 @@ func FeePeriodWorkflow(ctx workflow.Context, input FeePeriodWorkflowInput) (FeeP
 				return // ignore if already closed
 			}
 
+			// Deduplicate by idempotency key if provided.
+			if signal.IdempotencyKey != "" {
+				if _, seen := processedKeys[signal.IdempotencyKey]; seen {
+					return // already processed this signal
+				}
+			}
+
 			// Persist via activity.
 			var output AddLineItemActivityOutput
 			err := workflow.ExecuteActivity(ctx, AddLineItemActivity, AddLineItemActivityInput{
@@ -150,6 +161,9 @@ func FeePeriodWorkflow(ctx workflow.Context, input FeePeriodWorkflowInput) (FeeP
 			}).Get(ctx, &output)
 
 			if err == nil {
+				if signal.IdempotencyKey != "" {
+					processedKeys[signal.IdempotencyKey] = struct{}{}
+				}
 				state.LineItems = append(state.LineItems, output.LineItem)
 				state.TotalAmountMinor += output.LineItem.BillAmountMinor
 			}

@@ -39,7 +39,18 @@ func checkRateLimit(ctx context.Context, customerID string) error {
 		return ErrRateLimited
 	}
 
+	// Periodically clean up old rate limit entries (older than 2 windows ago).
+	// Fire-and-forget to avoid blocking the request.
+	go cleanupOldRateLimitEntries(context.Background(), windowStart)
+
 	return nil
+}
+
+// cleanupOldRateLimitEntries removes expired rate limit entries.
+func cleanupOldRateLimitEntries(ctx context.Context, currentWindow time.Time) {
+	cutoff := currentWindow.Add(-2 * RateLimitWindow)
+	const query = `DELETE FROM rate_limit_entries WHERE window_start < $1`
+	_, _ = db.Exec(ctx, query, cutoff)
 }
 
 // checkBruteForceLimit checks if this key hash has exceeded the brute-force attempt limit.

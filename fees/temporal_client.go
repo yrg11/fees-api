@@ -9,6 +9,10 @@ import (
 	"go.temporal.io/sdk/client"
 )
 
+var temporalSecrets struct {
+	TemporalHostPort string // e.g. "localhost:7233" or "temporal.prod.internal:7233"
+}
+
 var (
 	temporalClientOnce sync.Once
 	temporalClient     client.Client
@@ -17,8 +21,12 @@ var (
 
 func getTemporalClient() (client.Client, error) {
 	temporalClientOnce.Do(func() {
+		hostPort := temporalSecrets.TemporalHostPort
+		if hostPort == "" {
+			hostPort = "localhost:7233"
+		}
 		temporalClient, temporalClientErr = client.Dial(client.Options{
-			HostPort: "localhost:7233",
+			HostPort: hostPort,
 		})
 	})
 
