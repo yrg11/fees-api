@@ -22,15 +22,6 @@ var (
 	ErrInvalidDate       = errors.New("invalid date format, expected YYYY-MM-DD")
 )
 
-// validateCurrency checks the currency exists in the currencies table.
-func validateCurrency(c Currency) error {
-	// Basic format check
-	if c == "" || len(c) < 3 {
-		return ErrInvalidCurrency
-	}
-	return nil
-}
-
 // validateCurrencyExists checks the currency is registered and active in DB.
 func validateCurrencyExists(ctx context.Context, c Currency) error {
 	return validateCurrencyFromDB(ctx, c)
@@ -248,6 +239,44 @@ func createBill(ctx context.Context, req createBillInput) (Bill, error) {
 	return b, nil
 }
 
+// waitForBillClose polls the DB until the bill status is CLOSED or the context expires.
+func waitForBillClose(ctx context.Context, billID int64) (Bill, []LineItem, error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return Bill{}, nil, fmt.Errorf("timeout waiting for bill close: %w", ctx.Err())
+		case <-ticker.C:
+			bill, err := getBill(ctx, billID)
+			if err != nil {
+				return Bill{}, nil, err
+			}
+			if bill.Status == BillStatusClosed {
+				items, err := listLineItems(ctx, billID)
+				if err != nil {
+					return Bill{}, nil, err
+				}
+				return bill, items, nil
+			}
+		}
+	}
+}
+
+// deleteBill removes a bill that has no line items (used for rollback on workflow start failure).
+func deleteBill(ctx context.Context, billID int64) error {
+	const query = `DELETE FROM bills WHERE id = $1 AND status = 'OPEN'`
+	result, err := db.Exec(ctx, query, billID)
+	if err != nil {
+		return fmt.Errorf("delete bill: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrBillNotFound
+	}
+	return nil
+}
+
 func setBillWorkflowID(ctx context.Context, billID int64, workflowID string) error {
 
 	const query = `
@@ -310,6 +339,8 @@ func getBill(ctx context.Context, billID int64) (Bill, error) {
 	return b, nil
 }
 
+// listBills returns all bills (no customer filter). Used only in tests.
+// Production code should always use listBillsByCustomer to enforce customer isolation.
 func listBills(ctx context.Context, status *BillStatus) ([]Bill, error) {
 	query := `
 		SELECT
@@ -546,43 +577,64 @@ func addLineItem(ctx context.Context, billID int64, req AddLineItemRequest) (Lin
 
 	var item LineItem
 
-	err = tx.QueryRow(ctx, `
-		INSERT INTO bill_line_items (
-			bill_id,
-			description,
-			base_currency,
-			base_amount_minor,
-			bill_currency,
-			bill_amount_minor,
-			fx_rate,
-			fx_rate_date
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, bill_id, description, base_currency, base_amount_minor,
-		          bill_currency, bill_amount_minor, fx_rate, fx_rate_date, created_at
-	`, billID, req.Description, req.Currency, req.AmountMinor, billCurrency, billAmountMinor, fxRate, fxRateDate).Scan(
-		&item.ID,
-		&item.BillID,
-		&item.Description,
-		&item.BaseCurrency,
-		&item.BaseAmountMinor,
-		&item.BillCurrency,
-		&item.BillAmountMinor,
-		&item.FXRate,
-		&item.FXRateDate,
-		&item.CreatedAt,
-	)
-
-	if err != nil {
-		return LineItem{}, fmt.Errorf("insert line item: %w", err)
+	// Use idempotency_key with ON CONFLICT to handle Temporal activity retries (at-least-once).
+	// If the key already exists for this bill, return the existing row without double-inserting.
+	var idempotencyKey *string
+	if req.IdempotencyKey != "" {
+		idempotencyKey = &req.IdempotencyKey
 	}
 
-	// Update the bill's running total
-	_, err = tx.Exec(ctx, `
-		UPDATE bills SET total_amount_minor = total_amount_minor + $2 WHERE id = $1
-	`, billID, billAmountMinor)
-	if err != nil {
-		return LineItem{}, fmt.Errorf("update bill total: %w", err)
+	// If we have an idempotency key, check for an existing row first.
+	// This avoids the insert-on-conflict complexity and clearly separates new vs duplicate.
+	var isDuplicate bool
+	if idempotencyKey != nil {
+		err = tx.QueryRow(ctx, `
+			SELECT id, bill_id, description, base_currency, base_amount_minor,
+			       bill_currency, bill_amount_minor, fx_rate, fx_rate_date, created_at
+			FROM bill_line_items
+			WHERE bill_id = $1 AND idempotency_key = $2
+		`, billID, *idempotencyKey).Scan(
+			&item.ID, &item.BillID, &item.Description, &item.BaseCurrency,
+			&item.BaseAmountMinor, &item.BillCurrency, &item.BillAmountMinor,
+			&item.FXRate, &item.FXRateDate, &item.CreatedAt,
+		)
+		if err == nil {
+			isDuplicate = true
+		}
+	}
+
+	if !isDuplicate {
+		err = tx.QueryRow(ctx, `
+			INSERT INTO bill_line_items (
+				bill_id,
+				description,
+				base_currency,
+				base_amount_minor,
+				bill_currency,
+				bill_amount_minor,
+				fx_rate,
+				fx_rate_date,
+				idempotency_key
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			RETURNING id, bill_id, description, base_currency, base_amount_minor,
+			          bill_currency, bill_amount_minor, fx_rate, fx_rate_date, created_at
+		`, billID, req.Description, req.Currency, req.AmountMinor, billCurrency, billAmountMinor, fxRate, fxRateDate, idempotencyKey).Scan(
+			&item.ID, &item.BillID, &item.Description, &item.BaseCurrency,
+			&item.BaseAmountMinor, &item.BillCurrency, &item.BillAmountMinor,
+			&item.FXRate, &item.FXRateDate, &item.CreatedAt,
+		)
+		if err != nil {
+			return LineItem{}, fmt.Errorf("insert line item: %w", err)
+		}
+
+		// Update the bill's running total only for genuinely new inserts.
+		_, err = tx.Exec(ctx, `
+			UPDATE bills SET total_amount_minor = total_amount_minor + $2 WHERE id = $1
+		`, billID, billAmountMinor)
+		if err != nil {
+			return LineItem{}, fmt.Errorf("update bill total: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -683,14 +735,44 @@ func closeBill(ctx context.Context, billID int64) (Bill, []LineItem, error) {
 	}
 
 	if status == BillStatusClosed {
-		b, err := getBill(ctx, billID)
+		// Read within the transaction to maintain consistency under the lock.
+		var b Bill
+		err = tx.QueryRow(ctx, `
+			SELECT id, customer_id, currency, status, period_start, period_end,
+			       total_amount_minor, COALESCE(temporal_workflow_id, ''), created_at, closed_at
+			FROM bills WHERE id = $1
+		`, billID).Scan(
+			&b.ID, &b.CustomerID, &b.Currency, &b.Status, &b.PeriodStart, &b.PeriodEnd,
+			&b.TotalAmountMinor, &b.WorkflowID, &b.CreatedAt, &b.ClosedAt,
+		)
 		if err != nil {
-			return Bill{}, nil, err
+			return Bill{}, nil, fmt.Errorf("read closed bill: %w", err)
 		}
 
-		items, err := listLineItems(ctx, billID)
+		rows, err := tx.Query(ctx, `
+			SELECT id, bill_id, description, base_currency, base_amount_minor,
+			       bill_currency, bill_amount_minor, fx_rate, fx_rate_date, created_at
+			FROM bill_line_items WHERE bill_id = $1 ORDER BY id
+		`, billID)
 		if err != nil {
-			return Bill{}, nil, err
+			return Bill{}, nil, fmt.Errorf("list line items: %w", err)
+		}
+		defer rows.Close()
+
+		var items []LineItem
+		for rows.Next() {
+			var item LineItem
+			if err := rows.Scan(
+				&item.ID, &item.BillID, &item.Description, &item.BaseCurrency,
+				&item.BaseAmountMinor, &item.BillCurrency, &item.BillAmountMinor,
+				&item.FXRate, &item.FXRateDate, &item.CreatedAt,
+			); err != nil {
+				return Bill{}, nil, fmt.Errorf("scan line item: %w", err)
+			}
+			items = append(items, item)
+		}
+		if err := rows.Err(); err != nil {
+			return Bill{}, nil, fmt.Errorf("iterate line items: %w", err)
 		}
 
 		return b, items, nil

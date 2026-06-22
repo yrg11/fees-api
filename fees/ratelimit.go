@@ -14,6 +14,8 @@ const (
 	// BruteForceMaxAttempts is the max auth attempts per key hash per window.
 	// This protects against brute-force key guessing.
 	BruteForceMaxAttempts = 10
+	// PublicEndpointMaxRequests is the max requests per window for unauthenticated public endpoints.
+	PublicEndpointMaxRequests = 10
 )
 
 // checkRateLimit increments the request count for the customer in the current window.
@@ -39,7 +41,18 @@ func checkRateLimit(ctx context.Context, customerID string) error {
 		return ErrRateLimited
 	}
 
+	// Periodically clean up old rate limit entries (older than 2 windows ago).
+	// Fire-and-forget to avoid blocking the request.
+	go cleanupOldRateLimitEntries(context.Background(), windowStart)
+
 	return nil
+}
+
+// cleanupOldRateLimitEntries removes expired rate limit entries.
+func cleanupOldRateLimitEntries(ctx context.Context, currentWindow time.Time) {
+	cutoff := currentWindow.Add(-2 * RateLimitWindow)
+	const query = `DELETE FROM rate_limit_entries WHERE window_start < $1`
+	_, _ = db.Exec(ctx, query, cutoff)
 }
 
 // checkBruteForceLimit checks if this key hash has exceeded the brute-force attempt limit.
@@ -80,4 +93,31 @@ func incrementBruteForceCounter(ctx context.Context, keyHash string) {
 	`
 
 	_, _ = db.Exec(ctx, query, identifier, windowStart)
+}
+
+// checkPublicEndpointRateLimit throttles unauthenticated public endpoints by email (or other identifier).
+// Returns ErrRateLimited if the limit is exceeded.
+func checkPublicEndpointRateLimit(ctx context.Context, identifier string) error {
+	key := "pub:" + identifier
+	windowStart := time.Now().UTC().Truncate(RateLimitWindow)
+
+	const query = `
+		INSERT INTO rate_limit_entries (customer_id, window_start, request_count)
+		VALUES ($1, $2, 1)
+		ON CONFLICT (customer_id, window_start)
+		DO UPDATE SET request_count = rate_limit_entries.request_count + 1
+		RETURNING request_count
+	`
+
+	var count int
+	err := db.QueryRow(ctx, query, key, windowStart).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check public rate limit: %w", err)
+	}
+
+	if count > PublicEndpointMaxRequests {
+		return ErrRateLimited
+	}
+
+	return nil
 }

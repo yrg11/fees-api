@@ -2,7 +2,9 @@ package fees
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"encore.dev/beta/errs"
@@ -30,6 +32,10 @@ func CreateBill(ctx context.Context, req *CreateBillRequest) (*CreateBillRespons
 
 	workflowID, err := startFeeWorkflow(ctx, bill)
 	if err != nil {
+		// Workflow failed to start — delete the orphaned bill so it doesn't sit OPEN forever.
+		if delErr := deleteBill(ctx, bill.ID); delErr != nil {
+			log.Printf("failed to clean up bill %d after workflow start failure: %v", bill.ID, delErr)
+		}
 		return nil, mapError(err)
 	}
 
@@ -55,7 +61,7 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 	if req.AmountMinor <= 0 {
 		return nil, mapError(ErrInvalidAmount)
 	}
-	if err := validateCurrency(req.Currency); err != nil {
+	if err := validateCurrencyExists(ctx, req.Currency); err != nil {
 		return nil, mapError(err)
 	}
 	if req.Date == "" {
@@ -76,10 +82,11 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 
 	// Send signal to the workflow — the workflow will persist via activity.
 	err = signalAddLineItem(ctx, billID, AddLineItemSignal{
-		Description: req.Description,
-		AmountMinor: req.AmountMinor,
-		Currency:    req.Currency,
-		Date:        req.Date,
+		IdempotencyKey: req.IdempotencyKey,
+		Description:    req.Description,
+		AmountMinor:    req.AmountMinor,
+		Currency:       req.Currency,
+		Date:           req.Date,
 	})
 	if err != nil {
 		return nil, mapError(err)
@@ -89,6 +96,7 @@ func AddLineItem(ctx context.Context, billID int64, req *AddLineItemRequest) (*A
 	return &AddLineItemResponse{
 		Accepted: true,
 		BillID:   billID,
+		Note:     "line item accepted for processing; query the bill or workflow-state to confirm persistence",
 	}, nil
 }
 
@@ -124,7 +132,8 @@ func CancelLineItem(ctx context.Context, billID int64, lineItemID int64) (*Cance
 	}, nil
 }
 
-// CloseBill sends a signal to the bill's Temporal workflow to close it.
+// CloseBill sends a signal to the bill's Temporal workflow to close it,
+// then waits for the close to complete and returns the final bill with all line items.
 //
 //encore:api auth method=POST path=/bills/:billID/close
 func CloseBill(ctx context.Context, billID int64) (*CloseBillResponse, error) {
@@ -134,7 +143,12 @@ func CloseBill(ctx context.Context, billID int64) (*CloseBillResponse, error) {
 		return nil, mapError(err)
 	}
 	if bill.Status == BillStatusClosed {
-		return nil, mapError(ErrBillAlreadyClosed)
+		// Already closed — return current state.
+		items, err := listLineItems(ctx, billID)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		return &CloseBillResponse{Bill: bill, LineItems: items}, nil
 	}
 
 	// Send close signal to the workflow.
@@ -143,10 +157,13 @@ func CloseBill(ctx context.Context, billID int64) (*CloseBillResponse, error) {
 		return nil, mapError(err)
 	}
 
-	return &CloseBillResponse{
-		Accepted: true,
-		BillID:   billID,
-	}, nil
+	// Wait for the workflow to process the close signal by polling until status changes.
+	closedBill, items, err := waitForBillClose(ctx, billID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	return &CloseBillResponse{Bill: closedBill, LineItems: items}, nil
 }
 
 //encore:api auth method=GET path=/bills/:billID
@@ -227,29 +244,26 @@ func authorizeBillAccess(ctx context.Context, billID int64) (Bill, error) {
 
 func mapError(err error) error {
 	switch {
-	case isErr(err, ErrBillNotFound):
+	case errors.Is(err, ErrBillNotFound):
 		return &errs.Error{Code: errs.NotFound, Message: err.Error()}
-	case isErr(err, ErrBillAlreadyClosed):
+	case errors.Is(err, ErrBillAlreadyClosed):
 		return &errs.Error{Code: errs.FailedPrecondition, Message: err.Error()}
-	case isErr(err, ErrLineItemNotFound):
+	case errors.Is(err, ErrLineItemNotFound):
 		return &errs.Error{Code: errs.NotFound, Message: err.Error()}
-	case isErr(err, ErrCurrencyMismatch):
+	case errors.Is(err, ErrCurrencyMismatch):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
-	case isErr(err, ErrInvalidCurrency):
+	case errors.Is(err, ErrInvalidCurrency):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
-	case isErr(err, ErrInvalidAmount):
+	case errors.Is(err, ErrInvalidAmount):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
-	case isErr(err, ErrInvalidPeriod):
+	case errors.Is(err, ErrInvalidPeriod):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
-	case isErr(err, ErrInvalidDate):
+	case errors.Is(err, ErrInvalidDate):
 		return &errs.Error{Code: errs.InvalidArgument, Message: err.Error()}
-	case isErr(err, ErrFXRateNotFound):
+	case errors.Is(err, ErrFXRateNotFound):
 		return &errs.Error{Code: errs.FailedPrecondition, Message: err.Error()}
 	default:
-		return &errs.Error{Code: errs.Internal, Message: err.Error()}
+		log.Printf("internal error: %v", err)
+		return &errs.Error{Code: errs.Internal, Message: "internal error"}
 	}
-}
-
-func isErr(err, target error) bool {
-	return err == target || (err != nil && err.Error() == target.Error())
 }

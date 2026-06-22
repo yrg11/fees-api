@@ -43,3 +43,10 @@ func nilIfEmpty(s string) *string {
 	}
 	return &s
 }
+
+// cleanupOldAuditLogs removes audit entries older than 90 days.
+// Called periodically in the background.
+func cleanupOldAuditLogs(ctx context.Context) {
+	const query = `DELETE FROM audit_log WHERE created_at < now() - interval '90 days'`
+	_, _ = db.Exec(ctx, query)
+}

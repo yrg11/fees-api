@@ -113,8 +113,8 @@ Temporalite is a lightweight, single-binary version of Temporal for local develo
 ```
 
 - **Encore** handles: HTTP API, database, request/response serialization, local dev environment
-- **Temporal** handles: Durable workflow state, signal processing, automatic retries, timer-based auto-close
-- **Database** is the read-optimized store (for queries/listing), while **Temporal** is the authoritative state (for mutations)
+- **Temporal** handles: Mutation sequencing, signal processing, automatic retries, durable timer-based auto-close
+- **PostgreSQL** is the system of record (all reads, all persistent state), while **Temporal** owns the ordering and delivery guarantees for mutations
 
 ---
 
@@ -169,6 +169,7 @@ Client → POST /bills → CreateBill (api.go)
                            ├── 2. Start Temporal workflow (temporal_client.go)
                            │      Workflow ID: "fee-period-bill-{id}"
                            │      Input: bill ID, customer, currency, period dates
+                           │      ⚠️ If this fails → DELETE the bill row (rollback)
                            │
                            └── 3. Store workflow ID in bill row
                                   Return bill to client
@@ -188,14 +189,17 @@ Client → POST /bills → CreateBill (api.go)
 ```
 Client → POST /bills/:id/line-items → AddLineItem (api.go)
                                           │
-                                          ├── 1. Validate input (currency, amount, etc.)
+                                          ├── 1. Validate input (currency exists in DB, amount, etc.)
                                           ├── 2. Check bill exists & is open (fast-fail from DB)
                                           └── 3. Send "add_line_item" SIGNAL to workflow
-                                                    │
+                                                    │        (includes optional idempotency_key)
                                                     ▼
                                           ┌─────────────────────┐
                                           │  Workflow receives   │
                                           │  signal, wakes up    │
+                                          │                       │
+                                          │  Check idempotency:  │
+                                          │  Skip if key seen    │
                                           │                       │
                                           │  Executes Activity:  │
                                           │  AddLineItemActivity │
@@ -205,12 +209,13 @@ Client → POST /bills/:id/line-items → AddLineItem (api.go)
                                           │                       │
                                           │  Updates in-memory    │
                                           │  state (total, items) │
+                                          │  Records key as seen  │
                                           │                       │
                                           │  Goes back to sleep   │
                                           └─────────────────────┘
 ```
 
-**Key insight**: The API doesn't write to the DB directly. It sends a signal. The workflow receives it, persists via an activity, and updates its own state. This makes Temporal the "first-class store of state."
+**Key insight**: The API doesn't write to the DB directly for mutations. It sends a signal. The workflow receives it, persists via an activity (writing to PostgreSQL as the system of record), and updates its in-memory projection. Temporal owns the sequencing; Postgres owns the data.
 
 ### 3. Closing a Bill (via Signal)
 
@@ -462,25 +467,55 @@ UPDATE bills SET total_amount_minor = total_amount_minor + $2 WHERE id = $1
 
 Since both values are integers, this addition is always exact — no drift over time.
 
-### 2. Dual state: Temporal + PostgreSQL
+### 2. Idempotent line item signals
 
-- **Temporal** = authoritative state for active bills (real-time, signal-driven)
-- **PostgreSQL** = queryable store for all bills (supports listing, filtering, reporting)
+Clients can provide an `idempotency_key` when adding a line item. The workflow tracks processed keys in memory:
 
-The workflow persists to DB via activities, so both stay in sync. The DB is eventually consistent with the workflow (milliseconds delay).
+```go
+// In the signal handler:
+if signal.IdempotencyKey != "" {
+    if _, seen := processedKeys[signal.IdempotencyKey]; seen {
+        return // already processed
+    }
+}
+```
 
-### 3. Async acknowledgment for mutations
+This prevents duplicate charges when clients retry after network timeouts. The key is optional — if omitted, every signal is treated as unique.
+
+### 3. Transactional bill creation with rollback
+
+If the Temporal workflow fails to start after the bill row is created, the bill is immediately deleted:
+
+```go
+workflowID, err := startFeeWorkflow(ctx, bill)
+if err != nil {
+    // Roll back: delete the orphaned bill
+    deleteBill(ctx, bill.ID)
+    return nil, mapError(err)
+}
+```
+
+This prevents "zombie" bills sitting OPEN forever with no workflow to process signals or auto-close.
+
+### 4. State architecture: PostgreSQL as system of record
+
+- **PostgreSQL** = system of record for all billing data (bills, line items, totals, customers)
+- **Temporal** = sequencing and delivery layer that ensures mutations are processed exactly once, in order, with automatic retries
+
+The workflow persists to DB via activities. The workflow also maintains an in-memory projection (queryable via `GET /bills/:id/workflow-state`) for real-time visibility into the processing pipeline. All read endpoints serve from Postgres.
+
+### 5. Async acknowledgment for mutations
 
 `AddLineItem` and `CloseBill` return immediately with `{"accepted": true}`. The actual work happens asynchronously in the workflow. This is because:
 - The signal is durably stored by Temporal — it will be processed
 - The workflow might need milliseconds to run the activity
 - The client doesn't need to wait for the DB write
 
-### 4. Validation before signalling
+### 6. Validation before signalling
 
 The API validates input and checks bill status before sending signals. This gives fast feedback for obvious errors (wrong currency, closed bill) without waiting for the workflow.
 
-### 5. Period-end auto-close via durable timer
+### 7. Period-end auto-close via durable timer
 
 ```go
 workflow.Sleep(ctx, periodEndDuration) // survives restarts!
@@ -492,12 +527,14 @@ No cron job needed. No external scheduler. Temporal's durable timer handles mont
 
 ## Running Locally
 
-1. Start Temporalite: `temporalite start --namespace default`
+1. Start Temporal: `temporal server start-dev --namespace default`
 2. Start the Encore app: `encore run`
-3. Start the worker (in another terminal or via the app's init)
+3. The worker starts automatically via `service.go` init
 4. Access the API at `http://localhost:4000`
 5. Access Encore dashboard at `http://localhost:9400`
 6. Access Temporal UI at `http://localhost:8233`
+
+The Temporal host defaults to `localhost:7233`. For production, set the `TemporalHostPort` secret (e.g., `encore secret set --type production TemporalHostPort`).
 
 ---
 
@@ -516,5 +553,5 @@ No cron job needed. No external scheduler. Temporal's durable timer handles mont
 | GET | `/bills/:id/workflow-state` | auth | Query real-time state from Temporal |
 | GET | `/bills` | auth | List customer's bills (optional `?status=OPEN\|CLOSED`) |
 | GET | `/currencies` | public | List active currencies |
-| POST | `/currencies` | private | Register new currency (admin) |
-| POST | `/fx/seed` | private | Seed historical FX rates (admin) |
+| POST | `/currencies` | private | Register new currency (internal mesh only, not internet-exposed) |
+| POST | `/fx/seed` | private | Seed historical FX rates (internal mesh only) |

@@ -142,6 +142,10 @@ func avFetchDailyRates(ctx context.Context, fromCurrency, toCurrency Currency, d
 	return rates, nil
 }
 
+var avHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+}
+
 // avDoRequest performs an HTTP GET to the given URL and returns the response body.
 func avDoRequest(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -149,7 +153,7 @@ func avDoRequest(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := avHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("alpha vantage request failed: %w", err)
 	}

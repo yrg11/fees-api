@@ -2,27 +2,43 @@ package fees
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 
 	"go.temporal.io/sdk/client"
 )
 
+var temporalSecrets struct {
+	TemporalHostPort string // e.g. "localhost:7233" or "temporal.prod.internal:7233"
+}
+
 var (
-	temporalClientOnce sync.Once
-	temporalClient     client.Client
-	temporalClientErr  error
+	temporalClientMu sync.Mutex
+	temporalClient   client.Client
 )
 
 func getTemporalClient() (client.Client, error) {
-	temporalClientOnce.Do(func() {
-		temporalClient, temporalClientErr = client.Dial(client.Options{
-			HostPort: "localhost:7233",
-		})
-	})
+	temporalClientMu.Lock()
+	defer temporalClientMu.Unlock()
 
-	return temporalClient, temporalClientErr
+	if temporalClient != nil {
+		return temporalClient, nil
+	}
+
+	hostPort := temporalSecrets.TemporalHostPort
+	if hostPort == "" {
+		hostPort = "localhost:7233"
+	}
+
+	c, err := client.Dial(client.Options{
+		HostPort: hostPort,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	temporalClient = c
+	return temporalClient, nil
 }
 
 func workflowIDForBill(billID int64) string {
@@ -108,6 +124,7 @@ func signalCloseBill(ctx context.Context, billID int64, reason string) error {
 }
 
 // queryBillWorkflowState queries the running workflow for its current state.
+// Note: once a bill's workflow completes (after close), this will fail — use GetBill for closed bills.
 func queryBillWorkflowState(ctx context.Context, billID int64) (*BillWorkflowState, error) {
 	c, err := getTemporalClient()
 	if err != nil {
@@ -122,14 +139,7 @@ func queryBillWorkflowState(ctx context.Context, billID int64) (*BillWorkflowSta
 
 	var state BillWorkflowState
 	if err := resp.Get(&state); err != nil {
-		// Try raw JSON decode as fallback.
-		raw, rawErr := json.Marshal(resp)
-		if rawErr != nil {
-			return nil, fmt.Errorf("decode workflow state: %w", err)
-		}
-		if jsonErr := json.Unmarshal(raw, &state); jsonErr != nil {
-			return nil, fmt.Errorf("decode workflow state: %w", err)
-		}
+		return nil, fmt.Errorf("decode workflow state: %w", err)
 	}
 
 	return &state, nil
